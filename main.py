@@ -84,18 +84,26 @@ class State(TypedDict):
 This system prompt defines the bot's personality and focus areas.
 It's sent with every API call to Claude to maintain consistent behavior.
 """
-SYSTEM_PROMPT = """You are a helpful AI assistant for a sports betting and arbitrage team. 
+SYSTEM_PROMPT = """
+You are a helpful AI assistant for a sports betting and arbitrage team that helps fetch, update and remind employees about their tasks.
+These "tasks" are related to customers who they help and use their account to do sports betting arbitrage.
 
-Your primary focus is to be highly responsive and knowledgeable about:
-- Sports betting strategies and odds
-- Arbitrage opportunities in sports betting
-- Risk management and bankroll management
-- Sports analytics and statistics
-- Betting market analysis
+Your main purpose is to increase operational efficiency by reminding employees about tasks and using a tool to update a task listed in google sheet.
 
-While you can engage in general conversation, you should always steer discussions back to sports betting and arbitrage when relevant. Be proactive, analytical, and help team members make informed decisions.
+You currently have the ability to do the following and absolutely nothing else:
+1. Answer questions and give advice
 
-Keep your responses concise but informative. Be friendly and professional."""
+On a side note, you are also knowledgeable about sports betting, arbitrage, odds analysis, bankroll management, betting strategies, and related topics.
+However, this isn't your main purpose or what you're here for. Your entire purpose is to answer questions related to tasks.
+
+RESPONSE RULES
+1. Be concise and natural. 
+2. Answer only what is asked. Don't expand on unrelated topics or force betting into casual conversation. 
+3. Keep responses short (1-2 sentences max) unless specifically asked for detailed explanations.
+4. Be friendly and conversational, not overly eager or salesy.
+5. If a question or message isn't related to anything sport betting or a certain task, answer it briefly and redirect back to what you're here for. In other words, end with something like "Is there any tasks you'd like to me to fetch or update for you?". This is just an example and it can be rephrased in multiple ways.
+6. When asked a question that appears broad, ask a clarifying question in order to get to the crux of what the person is asking before responding.
+"""
 
 print("\n✅ System prompt loaded - Focus: Sports betting & arbitrage")
 
@@ -125,7 +133,7 @@ def save_conversation_to_supabase(user_id: str, channel_id: str, message: str, r
             "channel_id": channel_id,
             "user_message": message,
             "bot_response": response,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now().isoformat()
         }
 
         # Insert into Supabase table
@@ -213,7 +221,7 @@ def call_ai_model(state: State):
         })
 
     # Add current message to context
-    current_message = state["messages"][-1]["content"]
+    current_message = state["messages"][-1].content
     context_messages.append({
         "role": "user",
         "content": current_message
@@ -227,9 +235,14 @@ def call_ai_model(state: State):
         print(f"   ⏳ Waiting for Claude API response...")
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",  # Using Claude Sonnet 4
-            max_tokens=1000,  # Maximum response length
+            max_tokens=500,  # Maximum response length
             system=SYSTEM_PROMPT,  # Sports betting focused system prompt
-            messages=context_messages
+            messages=context_messages,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5
+            }]
         )
 
         # Extract AI response text
@@ -305,9 +318,11 @@ print("✅ Conversation graph ready!")
 # Configure Discord intents (permissions for what the bot can see/do)
 print("\n🔐 Configuring Discord intents...")
 intents = discord.Intents.default()
-intents.message_content = True  # Required to read message content
-intents.messages = True  # Required to receive messages
-intents.guilds = True  # Required to access server information
+intents.message_content = True
+intents.messages = True
+intents.guilds = True
+intents.guild_messages = True  # ← CRITICAL FIX!
+intents.dm_messages = True     # ← Added for completeness
 print("   ✅ Intents configured (message_content, messages, guilds)")
 
 # Initialize Discord bot with command prefix and intents
@@ -355,12 +370,14 @@ async def on_message(message):
     Args:
         message: Discord message object containing all message info
     """
+    print(f"\n🔍 Message detected: '{message.content}' from {message.author.name}")
     # Ignore messages from the bot itself to prevent infinite loops
     if message.author == bot.user:
         return
 
     # Only respond when bot is mentioned or in DMs
     is_mentioned = bot.user.mentioned_in(message)
+    print("is_mentioned: ", is_mentioned)
     is_dm = isinstance(message.channel, discord.DMChannel)
 
     if is_mentioned or is_dm:
@@ -405,7 +422,7 @@ async def on_message(message):
                 result = conversation_graph.invoke(state, config)
 
                 # Get AI response from result
-                ai_message = result["messages"][-1]["content"]
+                ai_message = result["messages"][-1].content
 
                 print(f"   ✅ Response generated ({len(ai_message)} chars)")
 
