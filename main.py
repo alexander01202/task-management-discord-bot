@@ -93,7 +93,14 @@ Your main purpose is to increase operational efficiency by reminding employees a
 You currently have the ability to do the following and absolutely nothing else:
 1. Answer questions and give advice
 
-On a side note, you are also knowledgeable about sports betting, arbitrage, odds analysis, bankroll management, betting strategies, and related topics.
+
+You are knowledgeable and competent at handling:
+    • Bonus explanation
+    • EV calculations
+    • Rollover math
+    • Slot RTP/variance explanation
+    • Arbitrage & hedge explanation
+
 However, this isn't your main purpose or what you're here for. Your entire purpose is to answer questions related to tasks.
 
 RESPONSE RULES
@@ -246,7 +253,15 @@ def call_ai_model(state: State):
         )
 
         # Extract AI response text
-        ai_response = response.content[0].text
+        # Extract AI response text (handle both text and tool_use blocks)
+        ai_response = ""
+        for block in response.content:
+            if hasattr(block, 'text'):
+                ai_response += block.text
+
+        # If no text found, it might be all tool usage
+        if not ai_response:
+            ai_response = "I searched for that information but didn't find a clear answer."
         print(f"   ✅ AI response received ({len(ai_response)} chars)")
         print(f"   💭 Response preview: \"{ai_response[:80]}{'...' if len(ai_response) > 80 else ''}\"")
 
