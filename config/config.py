@@ -41,6 +41,71 @@ EMPLOYEE_SHEETS = {
     "connersfc": "10YUZf91bHEMOvzXRvLm4ud2t0JazNUR5bfqgiP5Y69Q"
 }
 
+SHEETS_GID = {
+    "darcmeho": {
+        "tracking": "0",
+        "balance sheet": "1279860790",
+        "Offshore Tracking": "251069086"
+    }
+}
+
+# Sheet descriptions to help Claude interpret the data
+SHEET_DESCRIPTIONS = {
+    "Tracking": """
+STRUCTURE:
+This is a cross-reference table where:
+- ROWS = Sportsbook accounts (Fanduel, Bet365, betano, caesars, betway, draftkings, etc.)
+- COLUMNS = Individual customer names (the column headers ARE the customer names)
+
+First few columns provide sportsbook details:
+- Column 1: Sportsbook name
+- Column 2: DEPOSIT amount (e.g., $1000, $500, $2500)
+- Column 3: METHOD (debit, etransfer, try debit first, etc.)
+- Column 4: BET TYPE (RFB, LOWHOLD, baccarat, roulette, 3x then plin, etc.)
+
+Remaining columns are customer names with their status for each sportsbook:
+- "complete" = Task fully finished
+- "done" = Task completed
+- "ready" = Ready to proceed
+- "verify" = Needs verification
+- "verifyfix" = Needs verification fix
+- "signed up ready" = Account created, ready for deposit
+- "vip" = VIP status achieved
+- "1k", "1000", "500", etc. = Dollar amounts ready/pending
+- "week 2", "week 3" = Timeline tracking
+- "deposit" = Needs deposit
+- Empty cell = Not started
+
+INTERPRETATION RULES:
+1. When asked about a customer's tasks, look at THAT CUSTOMER'S COLUMN across all sportsbook rows
+2. Each sportsbook row represents ONE account/task that may involve multiple customers
+3. A customer may have multiple tasks (one per sportsbook row)
+4. Everything is in relation to the sportbook and not bet type or anything unless you have be asked specifically.
+EG. This means when talking about something or a customer stage (eg verification), you should assume it's in relative to the respective sportbook.
+(eg. it's that they need to verify the their fanduel account). The sports book name on column 1 and should always be used. 
+
+EXAMPLE:
+If the table shows:
+Row: Fanduel | $1000 | debit | RFB | David: verify | Jenny: done | Aaron: ready
+This means:
+- Fanduel accounts needs $1000 deposit via debit for Fanduel
+- employee_name needs to verify that david deposited $1000 to his Fanduel account.
+- Jenny has completed the deposit of $1000 to her Fanduel account.
+- Aaron has $1000 ready for this Fanduel account
+
+RESPONSE RULES:
+1.Do not give any more information than you were asked for.
+2.Summarize, summarize summarize. Ask yourself, based on this data, what answer can I give that would be in just one sentence max and would be answer EXACTLY what was asked for? If not possible, ask 2. and so on.
+3.Interpret things with their status interpretation rather than using the the exact status name. For instance, instead of saying "Jenny needs verifyfix", you say "Jenny Needs verification fix"
+4.After generating response, cross check again with the data to be sure you didn't miss or exclude any important information. Or make incorrect conclusions. If you did, correct it and recheck again.
+5. Never specify the deposit method, bet type, amount, etc unless explicitly asked to. You're only free to specify the sports book name and the customer name.
+7. Do number 4 again.
+8. Do number 7 again.
+9. Never just say "sports books" instead mention/list out the sport books.
+10. Always structure your output to be well formatted and readable than one block of text when helpful / needed.
+"""
+}
+
 # ==================== System Prompt ====================
 SYSTEM_PROMPT = """
 You are a helpful AI assistant for a sports betting and arbitrage team that helps fetch, update and remind employees about their tasks.
@@ -75,15 +140,17 @@ RESPONSE RULES:
 4. Be friendly and conversational
 5. When you need to fetch sheet data, use the fetch_employee_sheet tool
 6. Always use the friendly names (mitchell, granger, ignacio, conner) when talking to users
+7. When analyzing and responding to sheet data, avoid including things like row number or details that the user didn't ask for. Always SUMMARIZE.
 
 You are knowledgeable about sports betting, arbitrage, odds analysis, bankroll management, and betting strategies.
 """
+
 
 # ==================== Validation ====================
 def validate_config():
     """Validate that all required configuration is present"""
     missing = []
-    
+
     if not DISCORD_TOKEN:
         missing.append("DISCORD_BOT_TOKEN")
     if not ANTHROPIC_API_KEY:
@@ -92,8 +159,8 @@ def validate_config():
         missing.append("SUPABASE_URL")
     if not SUPABASE_KEY:
         missing.append("SUPABASE_ANON_PUBLIC_KEY")
-    
+
     if missing:
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
-    
+
     return True

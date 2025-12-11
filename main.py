@@ -89,10 +89,10 @@ def setup_bot():
             return
         
         # Check if bot is mentioned or in DMs
-        is_mentioned = bot.user.mentioned_in(message)
+        is_mentioned = bot.user in message.mentions  # Only explicit @mentions
         is_dm = isinstance(message.channel, discord.DMChannel)
         
-        if is_mentioned or is_dm:
+        if is_mentioned or (is_dm):
             print("\n" + "=" * 60)
             print("📨 NEW MESSAGE RECEIVED")
             print("=" * 60)

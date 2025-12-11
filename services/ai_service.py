@@ -61,41 +61,51 @@ class AIService:
                     available_names = PermissionManager.get_all_employee_names()
                     return f"I don't recognize '{employee_name}'. Available employees: {', '.join(available_names)}"
 
-            # Fetch sheet data with permission checking
-            result = self.sheets_service.get_employee_sheet(employee_username, username, worksheet_name)
+            # Fetch sheet data with permission checking and smart matching
+            # If worksheet_name provided, use it as query for matching
+            query = worksheet_name if worksheet_name else None
+            result = self.sheets_service.get_employee_sheet(employee_username, username, query)
 
             if result is None:
                 return f"Could not fetch sheet for {employee_name}. Either the user doesn't exist or you don't have permission."
 
-            # Check if we got a list of worksheets (no worksheet_name specified)
+            # Check if we got a list of worksheets (low confidence or no query)
             if "worksheets" in result:
                 worksheets = result["worksheets"]
-                if len(worksheets) == 1:
-                    # Only one worksheet, fetch it automatically
-                    print(f"   📋 Only one worksheet found: {worksheets[0]}, fetching automatically")
-                    result = self.sheets_service.get_employee_sheet(employee_username, username, worksheets[0])
-                    if result and "data" in result:
-                        data = result["data"]
-                        if not data:
-                            return f"{employee_name}'s sheet (worksheet: {worksheets[0]}) is currently empty."
-                        formatted = self.sheets_service.format_sheet_data(data, limit=50)
-                        return f"Sheet data for {employee_name} (worksheet: {worksheets[0]}):\n\n{formatted}"
-                else:
-                    # Multiple worksheets, ask user to specify
+                best_guess = result.get("best_guess")
+                confidence = result.get("confidence", 0)
+
+                # If we have a best guess with some confidence, mention it
+                if best_guess and confidence > 0.4:
                     worksheet_list = "\n".join([f"  • {ws}" for ws in worksheets])
-                    return f"{employee_name}'s spreadsheet has {len(worksheets)} worksheets:\n{worksheet_list}\n\nPlease specify which worksheet you'd like to see."
+                    return f"{employee_name}'s spreadsheet has {len(worksheets)} worksheets:\n{worksheet_list}\n\nI think you might be looking for '{best_guess}' ({confidence:.0%} confidence). Which worksheet would you like to see?"
+                else:
+                    worksheet_list = "\n".join([f"  • {ws}" for ws in worksheets])
+                    return f"{employee_name}'s spreadsheet has {len(worksheets)} worksheets:\n{worksheet_list}\n\nWhich worksheet would you like to see?"
 
             # We got data from a specific worksheet
             if "data" in result:
                 data = result["data"]
                 ws_name = result.get("worksheet_name", "unknown")
+                confidence = result.get("confidence")
 
                 if not data:
                     return f"{employee_name}'s sheet (worksheet: {ws_name}) is currently empty."
 
+                # Get sheet description if available
+                from config.config import SHEET_DESCRIPTIONS
+                sheet_description = SHEET_DESCRIPTIONS.get(ws_name, "")
+
                 # Format data for Claude to analyze
                 formatted = self.sheets_service.format_sheet_data(data, limit=50)
-                return f"Sheet data for {employee_name} (worksheet: {ws_name}):\n\n{formatted}"
+                response = f"Sheet data for {employee_name} (worksheet: {ws_name}"
+                if confidence:
+                    response += f", {confidence:.0%} confidence match"
+                response += "):\n\n"
+                if sheet_description:
+                    response += f"SHEET GUIDE:\n{sheet_description}\n\nDATA:\n"
+                response += formatted
+                return response
 
             return f"Unexpected result format when fetching {employee_name}'s sheet."
 
@@ -184,7 +194,7 @@ class AIService:
                 "required": ["employee_name"]
             }
         })
-        
+
         # Web search tool
         if enable_web_search:
             tools.append({
@@ -192,15 +202,15 @@ class AIService:
                 "name": "web_search",
                 "max_uses": 5
             })
-        
+
         try:
             max_iterations = 5  # Prevent infinite loops
             iteration = 0
-            
+
             while iteration < max_iterations:
                 iteration += 1
                 print(f"   🔄 Iteration {iteration}...")
-                
+
                 # Call Anthropic API
                 response = self.client.messages.create(
                     model=CLAUDE_MODEL,
@@ -209,66 +219,66 @@ class AIService:
                     messages=context_messages,
                     tools=tools
                 )
-                
+
                 # Check if Claude wants to use a tool
                 tool_use_blocks = [block for block in response.content if hasattr(block, 'type') and block.type == "tool_use"]
-                
+
                 if not tool_use_blocks:
                     # No tool use, extract final response
                     ai_response = ""
                     for block in response.content:
                         if hasattr(block, 'text'):
                             ai_response += block.text
-                    
+
                     if not ai_response:
                         ai_response = "I'm not sure how to respond to that."
-                    
+
                     print(f"   ✅ AI response received ({len(ai_response)} chars)")
                     print(f"   💭 Response preview: \"{ai_response[:80]}{'...' if len(ai_response) > 80 else ''}\"")
-                    
+
                     return ai_response
-                
+
                 # Claude wants to use tools - execute them
                 print(f"   🔧 Claude is using {len(tool_use_blocks)} tool(s)...")
-                
+
                 # Add assistant's message (with tool use) to context
                 context_messages.append({
                     "role": "assistant",
                     "content": response.content
                 })
-                
+
                 # Execute each tool and add results
                 tool_results = []
                 for tool_use in tool_use_blocks:
                     tool_name = tool_use.name
                     tool_input = tool_use.input
                     tool_use_id = tool_use.id
-                    
+
                     print(f"      🛠️  Executing tool: {tool_name}")
                     print(f"         Input: {tool_input}")
-                    
+
                     # Execute the tool
                     result = self._execute_tool(tool_name, tool_input, username)
-                    
+
                     print(f"         Result preview: {result[:100]}...")
-                    
+
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
                         "content": result
                     })
-                
+
                 # Add tool results to context
                 context_messages.append({
                     "role": "user",
                     "content": tool_results
                 })
-                
+
                 # Continue loop to let Claude process the tool results
-            
+
             # If we hit max iterations, return what we have
             return "I tried to process your request but ran into complexity limits. Please try rephrasing your question."
-            
+
         except Exception as e:
             print(f"   ❌ Error calling Anthropic API: {e}")
             import traceback
