@@ -286,87 +286,25 @@ class GoogleSheetsService:
                 for col_idx, col_name in valid_columns:
                     if col_idx < len(row):
                         value = row[col_idx]
-                        if value:  # Only add non-empty values
-                            row_dict[col_name] = value
+                        # ✅ Include ALL values, even empty ones, so Claude can see blanks
+                        row_dict[col_name] = value
+                    else:
+                        # Column doesn't exist in this row
+                        row_dict[col_name] = ""
 
                 # Only add row if it has at least one value
                 if row_dict:
                     data.append(row_dict)
 
             print(f"   ✅ Retrieved {len(data)} rows from sheet")
-            return data
 
-        except Exception as e:
-            print(f"   ❌ Error fetching sheet data: {e}")
-            return None
-        """
-        Fetch all data from a Google Sheet
-        
-        Args:
-            sheet_id: Google Sheet ID
-            worksheet_name: Name of worksheet (default: first worksheet)
-            
-        Returns:
-            List of dictionaries with row data, or None if error
-        """
-        if not self.client:
-            print("   ❌ Google Sheets client not initialized")
-            return None
+            # Apply row limit for specific worksheets
+            if worksheet_identifier.lower() == "tracking":
+                original_count = len(data)
+                data = data[:22]  # Only keep first 22 rows for Tracking sheet
+                if original_count > 22:
+                    print(f"   📏 Limited Tracking sheet from {original_count} to 22 rows")
 
-        print(f"   📄 Fetching data from sheet: {sheet_id}")
-
-        try:
-            # Open the spreadsheet
-            spreadsheet = self.client.open_by_key(sheet_id)
-
-            # Get the worksheet
-            if worksheet_name:
-                worksheet = spreadsheet.worksheet(worksheet_name)
-            else:
-                worksheet = spreadsheet.get_worksheet(0)  # First worksheet
-
-            # Get all values (including headers)
-            all_values = worksheet.get_all_values()
-
-            if not all_values or len(all_values) < 2:
-                print(f"   ⚠️  Worksheet is empty or has no data rows")
-                return []
-
-            # Get headers and clean them up
-            headers = all_values[0]
-            data_rows = all_values[1:]
-
-            # Find non-empty headers and their indices
-            valid_columns = []
-            for idx, header in enumerate(headers):
-                if header and header.strip():  # Only keep non-empty headers
-                    valid_columns.append((idx, header.strip()))
-
-            if not valid_columns:
-                print(f"   ⚠️  No valid column headers found")
-                return []
-
-            print(f"   📋 Found {len(valid_columns)} valid columns: {[h for _, h in valid_columns]}")
-
-            # Build list of dictionaries using only valid columns
-            data = []
-            for row in data_rows:
-                # Skip completely empty rows
-                if not any(cell for cell in row):
-                    continue
-
-                row_dict = {}
-                for col_idx, col_name in valid_columns:
-                    if col_idx < len(row):
-                        value = row[col_idx]
-                        if value:  # Only add non-empty values
-                            row_dict[col_name] = value
-
-                # Only add row if it has at least one value
-                if row_dict:
-                    data.append(row_dict)
-
-            print(f"   ✅ Retrieved {len(data)} rows from sheet")
             return data
 
         except Exception as e:
