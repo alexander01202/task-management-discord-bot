@@ -32,9 +32,6 @@ class ReminderScheduler:
         self.sheets_service = sheets_service
         self.scheduler = AsyncIOScheduler()
 
-    def __del__(self):
-        self.stop()
-
     def start(self):
         """Start the scheduler"""
         print("\n⏰ Initializing Daily Reminder Scheduler...")
@@ -125,20 +122,54 @@ class ReminderScheduler:
             return
 
         # Analyze data and group by customer
-        pending_tasks = self._analyze_tracking_data(data)
+        tasks_by_customer = self._analyze_tracking_data(data)
 
-        if not pending_tasks:
+        if not tasks_by_customer:
             print(f"      ✅ No pending tasks for {employee_username}")
             return
 
+        # Check if we should send blank tasks reminder (72-hour interval)
+        should_send_signups = self._should_send_blank_reminder(employee_username)
+
+        # Filter tasks based on reminder schedule
+        filtered_tasks = {}
+        for customer, action_groups in tasks_by_customer.items():
+            filtered_actions = {}
+
+            for action_type, tasks in action_groups.items():
+                # Only include signup tasks if 72+ hours have passed
+                if action_type == 'signup':
+                    if should_send_signups:
+                        filtered_actions[action_type] = tasks
+                else:
+                    # All other action types always included
+                    filtered_actions[action_type] = tasks
+
+            # Only add customer if they have tasks after filtering
+            if filtered_actions:
+                filtered_tasks[customer] = filtered_actions
+
+        if not filtered_tasks:
+            print(f"      ✅ No tasks to remind about today for {employee_username}")
+            return
+
         # Format reminder message
-        message = self._format_reminder_message(employee_username, friendly_name, pending_tasks)
+        message = self._format_reminder_message(employee_username, friendly_name, filtered_tasks)
 
         # Send to channel
-        await channel.send(message)
-        print(f"      ✅ Reminder sent for {employee_username}")
+        if message is None:
+            # Message too long, split by customer
+            print(f"      ✂️  Splitting message by customer...")
+            await self._send_split_reminders(channel, employee_username, friendly_name, filtered_tasks)
+        else:
+            await channel.send(message)
+            print(f"      ✅ Reminder sent for {employee_username}")
 
-    def _analyze_tracking_data(self, data: List[Dict]) -> Dict[str, List[Dict]]:
+        # Update blank task reminder timestamp if we sent them
+        if should_send_signups:
+            self._update_blank_reminder_timestamp(employee_username)
+
+    def _analyze_tracking_data(self, data: List[Dict]) -> Dict[str, Dict]:
         """
         Analyze tracking sheet data and group pending tasks by customer
 
@@ -146,7 +177,7 @@ class ReminderScheduler:
             data: List of row dictionaries from Tracking sheet
 
         Returns:
-            Dict mapping customer names to their pending tasks
+            Dict with tasks grouped by action type for each customer
         """
         # Get all customer columns (skip first 4: sportsbook, deposit, method, bet type)
         if not data:
@@ -155,10 +186,12 @@ class ReminderScheduler:
         first_row = data[0]
         all_columns = list(first_row.keys())
 
+        # Category keywords to filter out (these are section headers, not sportsbooks)
+        CATEGORY_KEYWORDS = ['casino', 'slots', 'blackjack', 'sports', 'baccarat']
+
         # Identify customer columns (anything after the first few metadata columns)
-        # Metadata columns typically: sportsbook name, DEPOSIT, METHOD, BET TYPE
         customer_columns = []
-        metadata_keywords = ['deposit', 'method', 'bet', 'type', 'sports']
+        metadata_keywords = ['deposit', 'method', 'bet', 'type']
 
         for col in all_columns:
             col_lower = col.lower()
@@ -170,19 +203,40 @@ class ReminderScheduler:
 
         print(f"      📋 Found {len(customer_columns)} customer columns: {customer_columns}")
 
-        # Group pending tasks by customer
-        pending_by_customer = {}
+        # Group tasks by customer and action type
+        tasks_by_customer = {}
 
         for row in data:
-            # Get sportsbook name (usually first column that's not empty)
+            # Get sportsbook details
             sportsbook = None
-            for col in all_columns[:4]:  # Check first few columns for sportsbook name
-                if row.get(col) and not any(keyword in row.get(col, '').lower() for keyword in
-                                            ['$', 'debit', 'etransfer', 'rfb', 'lowhold', 'baccarat']):
-                    sportsbook = row.get(col)
-                    break
+            deposit = ""
+            method = ""
+            bet_type = ""
+
+            # Try to extract sportsbook details
+            for col in all_columns[:6]:
+                value = row.get(col, "").strip()
+                col_lower = col.lower()
+
+                if not value:
+                    continue
+
+                if 'deposit' in col_lower and '$' in value:
+                    deposit = value
+                elif 'method' in col_lower:
+                    method = value
+                elif 'bet' in col_lower or 'type' in col_lower:
+                    bet_type = value
+                elif not sportsbook and not any(keyword in value.lower() for keyword in ['$', 'debit', 'etransfer', 'rfb', 'lowhold', 'baccarat']):
+                    sportsbook = value
 
             if not sportsbook:
+                continue
+
+            # Skip category rows (CASINO, SLOTS, BLACKJACK, etc.)
+            sportsbook_lower = sportsbook.lower()
+            if any(keyword == sportsbook_lower for keyword in CATEGORY_KEYWORDS):
+                print(f"      ⏭️  Skipping category row: {sportsbook}")
                 continue
 
             # Check each customer's status for this sportsbook
@@ -193,20 +247,128 @@ class ReminderScheduler:
                 if status.lower() in ['complete', 'done']:
                     continue
 
-                # This is a pending task
-                if customer not in pending_by_customer:
-                    pending_by_customer[customer] = []
+                # Initialize customer dict if needed
+                if customer not in tasks_by_customer:
+                    tasks_by_customer[customer] = {}
 
-                # Interpret the status
-                interpreted_status = self._interpret_status(status)
+                # Determine action type
+                action_type = self._get_action_type(status)
 
-                pending_by_customer[customer].append({
+                # Initialize action type list if needed
+                if action_type not in tasks_by_customer[customer]:
+                    tasks_by_customer[customer][action_type] = []
+
+                # Add sportsbook to this action type
+                tasks_by_customer[customer][action_type].append({
                     'sportsbook': sportsbook,
-                    'status': status,
-                    'interpreted': interpreted_status
+                    'deposit': deposit,
+                    'bet_type': bet_type,
+                    'status': status
                 })
 
-        return pending_by_customer
+        return tasks_by_customer
+
+    def _get_action_type(self, status: str) -> str:
+        """
+        Determine the action type based on status
+
+        Args:
+            status: Task status
+
+        Returns:
+            Action type category
+        """
+        if not status or status == "":
+            return "signup"
+
+        status_lower = status.lower()
+
+        # Verification
+        if status_lower in ["verify", "verifyfix"]:
+            return "verification"
+
+        # Deposit
+        if status_lower in ["deposit", "signed up ready"]:
+            return "deposit"
+
+        # Wager (ready with amount)
+        if status_lower in ["ready", "1k", "1000", "500", "2000", "2500", "3000", "5000"]:
+            return "wager"
+
+        if status_lower.replace('k', '').replace('$', '').replace(',', '').isdigit():
+            return "wager"
+
+        # Week progress
+        if "week" in status_lower:
+            return "progress"
+
+        # VIP
+        if status_lower == "vip":
+            return "vip"
+
+        # Default - other
+        return "other"
+
+    def _get_action_message(self, status: str, sportsbook: str, deposit: str, bet_type: str) -> str:
+        """
+        Generate specific action message based on status and sportsbook details
+
+        Args:
+            status: Task status
+            sportsbook: Sportsbook name
+            deposit: Deposit amount
+            bet_type: Bet type/requirement
+
+        Returns:
+            Action message string
+        """
+        if not status or status == "":
+            return f"Need to signup for {sportsbook}"
+
+        status_lower = status.lower()
+
+        # Verification statuses
+        if status_lower in ["verify", "verifyfix"]:
+            action = "verification fix" if status_lower == "verifyfix" else "verification"
+            return f"Complete {action} for {sportsbook}"
+
+        # Ready with amount
+        if status_lower in ["ready", "1k", "1000", "500", "2000", "2500", "3000", "5000"]:
+            amount = status_lower.replace('k', '000') if 'k' in status_lower else status_lower
+            if amount.isdigit():
+                return f"Complete ${amount} wager for {sportsbook}"
+            elif deposit:
+                return f"Complete {deposit} wager for {sportsbook}"
+            else:
+                return f"Complete wager for {sportsbook}"
+
+        # Deposit needed
+        if status_lower == "deposit":
+            if deposit:
+                return f"Complete {deposit} deposit for {sportsbook}"
+            else:
+                return f"Complete deposit for {sportsbook}"
+
+        # Signup ready
+        if "signed up ready" in status_lower:
+            if deposit:
+                return f"Complete {deposit} deposit for {sportsbook}"
+            else:
+                return f"Complete deposit for {sportsbook}"
+
+        # VIP status
+        if status_lower == "vip":
+            return f"VIP status achieved for {sportsbook} - proceed with next steps"
+
+        # Week tracking
+        if "week" in status_lower:
+            return f"Continue {status} for {sportsbook}"
+
+        # Default: use bet type or generic
+        if bet_type:
+            return f"Complete {bet_type} for {sportsbook}"
+        else:
+            return f"Complete task for {sportsbook}"
 
     def _interpret_status(self, status: str) -> str:
         """
@@ -249,40 +411,179 @@ class ReminderScheduler:
             # Return as-is if we don't recognize it
             return status
 
-    def _format_reminder_message(self, employee_username: str, friendly_name: str,
-                                 pending_tasks: Dict[str, List[Dict]]) -> str:
+    def _format_reminder_message(self, employee_username: str, friendly_name: str, tasks_by_customer: Dict[str, Dict]) -> str:
         """
-        Format reminder message
+        Format reminder message with tasks grouped by action type
 
         Args:
             employee_username: Employee's Discord username
             friendly_name: Employee's friendly name
-            pending_tasks: Dict of customer -> list of pending tasks
+            tasks_by_customer: Dict with tasks grouped by action type per customer
 
         Returns:
-            Formatted Discord message
+            Formatted Discord message or None if too long
         """
-        # Count total tasks
-        total_tasks = sum(len(tasks) for tasks in pending_tasks.values())
-
         message_parts = [
-            f"<@{employee_username}> Daily Task Reminder - {friendly_name}'s Tracking Sheet",
-            "",
-            "📋 **Tasks Needing Attention:**",
+            f"@{employee_username} Daily Task Reminder - {friendly_name}'s Tracking Sheet",
             ""
         ]
 
-        # Add each customer's tasks
-        for customer, tasks in sorted(pending_tasks.items()):
+        # Define action type labels and order
+        action_labels = {
+            'signup': 'Need to signup for',
+            'verification': 'Complete verification for',
+            'deposit': 'Complete deposit for',
+            'wager': 'Complete wager for',
+            'progress': 'Continue progress for',
+            'vip': 'VIP tasks',
+            'other': 'Other tasks'
+        }
+
+        action_order = ['signup', 'verification', 'deposit', 'wager', 'progress', 'vip', 'other']
+
+        # Add each customer's tasks grouped by action
+        for customer, action_groups in sorted(tasks_by_customer.items()):
+            if not action_groups:
+                continue
+
             message_parts.append(f"**{customer}:**")
-            for task in tasks:
-                message_parts.append(f"• {task['sportsbook']} - {task['interpreted']}")
+
+            for action_type in action_order:
+                if action_type not in action_groups or not action_groups[action_type]:
+                    continue
+
+                # Get list of sportsbook names
+                sportsbooks = [task['sportsbook'] for task in action_groups[action_type]]
+                sportsbooks_str = ", ".join(sportsbooks)
+
+                # Format the line
+                label = action_labels.get(action_type, action_type)
+                message_parts.append(f"• {label} {sportsbooks_str}")
+
             message_parts.append("")  # Blank line between customers
 
-        # Add summary
-        message_parts.append(f"**Total:** {len(pending_tasks)} customers with {total_tasks} pending tasks")
+        full_message = "\n".join(message_parts)
 
-        return "\n".join(message_parts)
+        # Discord has a 2000 char limit for regular messages
+        # Let's use 1900 to be safe
+        MAX_LENGTH = 1900
+
+        if len(full_message) > MAX_LENGTH:
+            # Message too long - split by customer
+            print(f"      ⚠️  Message too long ({len(full_message)} chars), splitting by customer...")
+            return None  # Signal to split and send separately
+
+        return full_message
+
+    async def _send_split_reminders(self, channel: discord.TextChannel, employee_username: str, friendly_name: str, tasks_by_customer: Dict[str, Dict]):
+        """
+        Send reminders split by customer when message is too long
+
+        Args:
+            channel: Discord channel
+            employee_username: Employee's Discord username
+            friendly_name: Employee's friendly name
+            tasks_by_customer: Dict with tasks grouped by action type per customer
+        """
+        # Send header message
+        total_customers = len(tasks_by_customer)
+
+        header = f"@{employee_username} Daily Task Reminder - {friendly_name}'s Tracking Sheet"
+        await channel.send(header)
+
+        # Define action type labels and order
+        action_labels = {
+            'signup': 'Need to signup for',
+            'verification': 'Complete verification for',
+            'deposit': 'Complete deposit for',
+            'wager': 'Complete wager for',
+            'progress': 'Continue progress for',
+            'vip': 'VIP tasks',
+            'other': 'Other tasks'
+        }
+
+        action_order = ['signup', 'verification', 'deposit', 'wager', 'progress', 'vip', 'other']
+
+        # Send each customer's tasks as separate message
+        for customer, action_groups in sorted(tasks_by_customer.items()):
+            if not action_groups:
+                continue
+
+            customer_parts = [f"**{customer}:**"]
+
+            for action_type in action_order:
+                if action_type not in action_groups or not action_groups[action_type]:
+                    continue
+
+                # Get list of sportsbook names
+                sportsbooks = [task['sportsbook'] for task in action_groups[action_type]]
+                sportsbooks_str = ", ".join(sportsbooks)
+
+                # Format the line
+                label = action_labels.get(action_type, action_type)
+                customer_parts.append(f"• {label} {sportsbooks_str}")
+
+            customer_message = "\n".join(customer_parts)
+            await channel.send(customer_message)
+
+        print(f"      ✅ Sent {len(tasks_by_customer)} split messages for {employee_username}")
+
+    def _should_send_blank_reminder(self, employee_username: str) -> bool:
+        """
+        Check if we should send blank task reminders (every 72 hours)
+
+        Args:
+            employee_username: Employee's Discord username
+
+        Returns:
+            True if 72+ hours since last blank reminder, False otherwise
+        """
+        import os
+        from datetime import datetime, timedelta
+
+        # Use a simple file to track last blank reminder time
+        tracking_file = f"/tmp/blank_reminder_{employee_username}.txt"
+
+        if not os.path.exists(tracking_file):
+            # Never sent before, send now
+            return True
+
+        try:
+            with open(tracking_file, 'r') as f:
+                last_sent_str = f.read().strip()
+                last_sent = datetime.fromisoformat(last_sent_str)
+
+            # Check if 72 hours have passed
+            hours_since = (datetime.now() - last_sent).total_seconds() / 3600
+
+            if hours_since >= 72:
+                print(f"      ⏰ 72+ hours since last blank reminder ({hours_since:.1f}h), sending blanks")
+                return True
+            else:
+                print(f"      ⏰ Only {hours_since:.1f}h since last blank reminder, skipping blanks")
+                return False
+
+        except Exception as e:
+            print(f"      ⚠️  Error reading blank reminder timestamp: {e}, sending anyway")
+            return True
+
+    def _update_blank_reminder_timestamp(self, employee_username: str):
+        """
+        Update the timestamp for last blank task reminder
+
+        Args:
+            employee_username: Employee's Discord username
+        """
+        from datetime import datetime
+
+        tracking_file = f"/tmp/blank_reminder_{employee_username}.txt"
+
+        try:
+            with open(tracking_file, 'w') as f:
+                f.write(datetime.now().isoformat())
+            print(f"      ✅ Updated blank reminder timestamp")
+        except Exception as e:
+            print(f"      ⚠️  Error updating blank reminder timestamp: {e}")
 
     def stop(self):
         """Stop the scheduler"""

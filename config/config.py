@@ -21,8 +21,8 @@ CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 # ==================== Reminder Settings ====================
 REMINDER_CHANNEL_ID = 1447229065529397399
-REMINDER_TIME_HOUR = 16  # 10 AM
-REMINDER_TIME_MINUTE = 30  # On the hour
+REMINDER_TIME_HOUR = 22  # 10 AM
+REMINDER_TIME_MINUTE = 10  # On the hour
 
 # ==================== Role-Based Access Control ====================
 ADMIN_USERNAMES = [
