@@ -13,7 +13,8 @@ from config.config import (
     EMPLOYEE_FRIENDLY_NAMES,
     REMINDER_CHANNEL_ID,
     REMINDER_TIME_HOUR,
-    REMINDER_TIME_MINUTE
+    REMINDER_TIME_MINUTE,
+    EMPLOYEE_DISCORD_IDS
 )
 
 
@@ -198,6 +199,12 @@ class ReminderScheduler:
             # Skip if it's a metadata column
             if any(keyword in col_lower for keyword in metadata_keywords):
                 continue
+
+            # ✅ NEW: Skip if it's a category keyword (SPORTS:, CASINO:, etc.)
+            if col_lower in CATEGORY_KEYWORDS or any(
+                    col_lower.startswith(keyword) for keyword in CATEGORY_KEYWORDS):
+                continue
+
             # This is a customer column
             customer_columns.append(col)
 
@@ -233,10 +240,11 @@ class ReminderScheduler:
             if not sportsbook:
                 continue
 
-            # Skip category rows (CASINO, SLOTS, BLACKJACK, etc.)
-            sportsbook_lower = sportsbook.lower()
-            if any(keyword == sportsbook_lower for keyword in CATEGORY_KEYWORDS):
-                print(f"      ⏭️  Skipping category row: {sportsbook}")
+            # Skip category rows (CASINO, SLOTS, BLACKJACK, SPORTS, etc.)
+            sportsbook_clean = sportsbook.lower().rstrip(':').strip()
+            if (sportsbook_clean in CATEGORY_KEYWORDS or
+                    any(sportsbook_clean.startswith(keyword) for keyword in CATEGORY_KEYWORDS)
+            ):
                 continue
 
             # Check each customer's status for this sportsbook
@@ -423,8 +431,10 @@ class ReminderScheduler:
         Returns:
             Formatted Discord message or None if too long
         """
+        discord_id = EMPLOYEE_DISCORD_IDS.get(employee_username, employee_username)
         message_parts = [
-            f"@{employee_username} Daily Task Reminder - {friendly_name}'s Tracking Sheet",
+            f"<@{discord_id}> \n\n"
+            f"Daily Task Reminder - {friendly_name}'s Tracking Sheet",
             ""
         ]
 
@@ -542,7 +552,7 @@ class ReminderScheduler:
         from datetime import datetime, timedelta
 
         # Use a simple file to track last blank reminder time
-        tracking_file = f"/tmp/blank_reminder_{employee_username}.txt"
+        tracking_file = f"tmp/blank_reminder_{employee_username}.txt"
 
         if not os.path.exists(tracking_file):
             # Never sent before, send now
@@ -574,9 +584,8 @@ class ReminderScheduler:
         Args:
             employee_username: Employee's Discord username
         """
-        from datetime import datetime
 
-        tracking_file = f"/tmp/blank_reminder_{employee_username}.txt"
+        tracking_file = f"tmp/blank_reminder_{employee_username}.txt"
 
         try:
             with open(tracking_file, 'w') as f:

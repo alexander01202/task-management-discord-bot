@@ -21,8 +21,8 @@ CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 # ==================== Reminder Settings ====================
 REMINDER_CHANNEL_ID = 1447229065529397399
-REMINDER_TIME_HOUR = 22  # 10 AM
-REMINDER_TIME_MINUTE = 10  # On the hour
+REMINDER_TIME_HOUR = 1  # 10 AM
+REMINDER_TIME_MINUTE = 32  # On the hour
 
 # ==================== Role-Based Access Control ====================
 ADMIN_USERNAMES = [
@@ -36,6 +36,14 @@ EMPLOYEE_FRIENDLY_NAMES = {
     "granger": "dillongranger22",
     "ignacio": "ignacioz1313",
     "conner": "connersfc"
+}
+
+# Discord User ID mapping (for proper @mentions)
+EMPLOYEE_DISCORD_IDS = {
+    "ignacioz1313": "1342566697248358420",
+    "dillongranger22": "1256306269988323380",
+    "darcmeho": "771822969810321418",
+    "connersfc": "235906007509893121"
 }
 
 # Employee to Sheet mapping (using Discord usernames)
