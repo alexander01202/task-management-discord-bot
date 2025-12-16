@@ -1,42 +1,33 @@
 """
-AI Service using Anthropic Claude API with Google Sheets Tool
+AI Service - NATURAL REMINDER HANDLING
 """
 from typing import List, Dict, Any
 from anthropic import Anthropic
+from datetime import datetime
 from config.config import (
-    ANTHROPIC_API_KEY, 
-    CLAUDE_MODEL, 
-    MAX_TOKENS, 
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    MAX_TOKENS,
     SYSTEM_PROMPT,
     MAX_CONTEXT_MESSAGES
 )
+from services.reminder_service import ReminderService
+from utils.time_parser import TimeParser
 
 
 class AIService:
-    """Handles all AI/Claude API operations with tool calling"""
-    
-    def __init__(self, sheets_service):
-        """
-        Initialize Anthropic client
-        
-        Args:
-            sheets_service: Google Sheets service instance for tool execution
-        """
+    """Handles all AI/Claude API operations with natural tool calling"""
+
+    def __init__(self, sheets_service, reminder_service: ReminderService = None):
+        """Initialize Anthropic client"""
         self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
         self.sheets_service = sheets_service
-    
-    def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any], username: str) -> str:
-        """
-        Execute a tool call
-        
-        Args:
-            tool_name: Name of the tool to execute
-            tool_input: Input parameters for the tool
-            username: Username of the requester (for permission checking)
-            
-        Returns:
-            Tool execution result as string
-        """
+        self.reminder_service = reminder_service or ReminderService()
+        self.time_parser = TimeParser()
+
+    def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any], username: str, user_id: str, channel_id: str, guild_id: str = None) -> str:
+        """Execute a tool call"""
+
         if tool_name == "fetch_employee_sheet":
             employee_name = tool_input.get("employee_name")
             worksheet_name = tool_input.get("worksheet_name")
@@ -44,7 +35,7 @@ class AIService:
             if not employee_name:
                 return "Error: employee_name is required"
 
-            # Handle special "me" keyword - employee asking for their own sheet
+            # Handle "me" keyword
             if employee_name.lower() == "me":
                 from utils.permissions import PermissionManager
                 if PermissionManager.is_employee(username):
@@ -57,25 +48,22 @@ class AIService:
                 employee_username = PermissionManager.resolve_employee_name(employee_name)
 
                 if not employee_username:
-                    # Try to provide helpful error message
                     available_names = PermissionManager.get_all_employee_names()
                     return f"I don't recognize '{employee_name}'. Available employees: {', '.join(available_names)}"
 
-            # Fetch sheet data with permission checking and smart matching
-            # If worksheet_name provided, use it as query for matching
+            # Fetch sheet data
             query = worksheet_name if worksheet_name else None
             result = self.sheets_service.get_employee_sheet(employee_username, username, query)
 
             if result is None:
                 return f"Could not fetch sheet for {employee_name}. Either the user doesn't exist or you don't have permission."
 
-            # Check if we got a list of worksheets (low confidence or no query)
+            # Handle list of worksheets
             if "worksheets" in result:
                 worksheets = result["worksheets"]
                 best_guess = result.get("best_guess")
                 confidence = result.get("confidence", 0)
 
-                # If we have a best guess with some confidence, mention it
                 if best_guess and confidence > 0.4:
                     worksheet_list = "\n".join([f"  • {ws}" for ws in worksheets])
                     return f"{employee_name}'s spreadsheet has {len(worksheets)} worksheets:\n{worksheet_list}\n\nI think you might be looking for '{best_guess}' ({confidence:.0%} confidence). Which worksheet would you like to see?"
@@ -83,7 +71,7 @@ class AIService:
                     worksheet_list = "\n".join([f"  • {ws}" for ws in worksheets])
                     return f"{employee_name}'s spreadsheet has {len(worksheets)} worksheets:\n{worksheet_list}\n\nWhich worksheet would you like to see?"
 
-            # We got data from a specific worksheet
+            # Handle specific worksheet data
             if "data" in result:
                 data = result["data"]
                 ws_name = result.get("worksheet_name", "unknown")
@@ -92,11 +80,9 @@ class AIService:
                 if not data:
                     return f"{employee_name}'s sheet (worksheet: {ws_name}) is currently empty."
 
-                # Get sheet description if available
                 from config.config import SHEET_DESCRIPTIONS
                 sheet_description = SHEET_DESCRIPTIONS.get(ws_name, "")
 
-                # Format data for Claude to analyze
                 formatted = self.sheets_service.format_sheet_data(data, limit=50)
                 response = f"Sheet data for {employee_name} (worksheet: {ws_name}"
                 if confidence:
@@ -109,6 +95,119 @@ class AIService:
 
             return f"Unexpected result format when fetching {employee_name}'s sheet."
 
+        elif tool_name == "create_reminder":
+            # Extract parameters
+            target_name = tool_input.get("target_name", "").strip()
+            reminder_text = tool_input.get("reminder_text", "").strip()
+            time_expression = tool_input.get("time_expression", "").strip()
+
+            if not reminder_text:
+                return "Error: reminder_text is required"
+
+            if not time_expression:
+                return "Error: time_expression is required"
+
+            # Parse the time expression (flexible!)
+            reminder_time = self.time_parser.parse(time_expression)
+
+            if not reminder_time:
+                # Time parser couldn't figure it out
+                return f"I couldn't understand the time '{time_expression}'. Could you clarify? For example: 'tomorrow', 'in 2 hours', 'Monday at 3pm', or 'next week'."
+
+            # Determine target username
+            from utils.permissions import PermissionManager
+
+            if not target_name or target_name.lower() in ["me", "myself"]:
+                # Reminder for the requester
+                target_username = username
+                target_user_id = user_id
+            else:
+                # Reminder for someone else
+                target_username = PermissionManager.resolve_employee_name(target_name)
+
+                if not target_username:
+                    available_names = PermissionManager.get_all_employee_names()
+                    return f"I don't recognize '{target_name}'. Available employees: {', '.join(available_names)}"
+
+                from config.config import EMPLOYEE_DISCORD_IDS
+                target_user_id = EMPLOYEE_DISCORD_IDS.get(target_username)
+
+            # Check if reminder is in the past
+            if reminder_time <= datetime.now():
+                return f"That time is in the past. When should I actually remind you?"
+
+            # Create the reminder
+            try:
+                reminder = self.reminder_service.create_reminder(
+                    creator_user_id=user_id,
+                    creator_username=username,
+                    target_username=target_username,
+                    reminder_text=reminder_text,
+                    reminder_time=reminder_time,
+                    channel_id=channel_id,
+                    guild_id=guild_id,
+                    target_user_id=target_user_id
+                )
+
+                formatted_time = self.time_parser.format_datetime(reminder_time)
+
+                if target_username == username:
+                    return f"✅ I'll remind you {formatted_time}"
+                else:
+                    friendly_name = PermissionManager.get_employee_friendly_name(target_username)
+                    display_name = friendly_name.title() if friendly_name else target_username
+                    return f"✅ I'll remind {display_name} {formatted_time}"
+
+            except Exception as e:
+                return f"Error creating reminder: {str(e)}"
+
+        elif tool_name == "list_reminders":
+            try:
+                reminders = self.reminder_service.get_user_reminders(username, include_past=False)
+
+                if not reminders:
+                    return "You don't have any pending reminders."
+
+                result = f"You have {len(reminders)} pending reminder(s):\n\n"
+
+                for i, reminder in enumerate(reminders, 1):
+                    reminder_time = datetime.fromisoformat(reminder['reminder_time'])
+                    formatted_time = self.time_parser.format_datetime(reminder_time)
+
+                    target = reminder['target_username']
+                    text = reminder['reminder_text']
+                    reminder_id = reminder['id']
+
+                    if target == username:
+                        result += f"{i}. (ID #{reminder_id}) [{formatted_time}] {text}\n"
+                    else:
+                        from utils.permissions import PermissionManager
+                        friendly_name = PermissionManager.get_employee_friendly_name(target)
+                        display_name = friendly_name.title() if friendly_name else target
+                        result += f"{i}. (ID #{reminder_id}) [{formatted_time}] Remind {display_name}: {text}\n"
+
+                return result
+
+            except Exception as e:
+                return f"Error fetching reminders: {str(e)}"
+
+        elif tool_name == "cancel_reminder":
+            reminder_id = tool_input.get("reminder_id")
+
+            if not reminder_id:
+                return "Error: reminder_id is required"
+
+            try:
+                success = self.reminder_service.cancel_reminder(reminder_id, username)
+
+                if success:
+                    return f"✅ Reminder cancelled"
+                else:
+                    return f"Could not cancel reminder #{reminder_id}. Either it doesn't exist or you don't have permission."
+
+            except Exception as e:
+                return f"Error cancelling reminder: {str(e)}"
+
         return f"Unknown tool: {tool_name}"
 
     def generate_response(
@@ -116,23 +215,16 @@ class AIService:
         current_message: str,
         conversation_history: List[Dict] = None,
         username: str = None,
+        user_id: str = None,
+        channel_id: str = None,
+        guild_id: str = None,
         enable_web_search: bool = True
     ) -> str:
-        """
-        Generate AI response using Claude with tool calling
+        """Generate AI response using Claude with tool calling"""
 
-        Args:
-            current_message: Current user message
-            conversation_history: List of past conversations
-            username: Username of requester (for permission checking)
-            enable_web_search: Whether to enable web search tool
-
-        Returns:
-            AI generated response
-        """
         print(f"\n🤖 Calling AI model ({CLAUDE_MODEL})...")
 
-        # Build context messages from history
+        # Build context messages
         context_messages = []
 
         if conversation_history:
@@ -149,7 +241,7 @@ class AIService:
                     "content": entry["bot_response"]
                 })
 
-        # Add requester context to help Claude understand who's asking
+        # Add requester context
         from utils.permissions import PermissionManager
         role = PermissionManager.get_user_role(username)
         friendly_name = PermissionManager.get_employee_friendly_name(username)
@@ -159,7 +251,6 @@ class AIService:
             requester_context += f", FriendlyName={friendly_name}"
         requester_context += "]"
 
-        # Add current message with requester context
         full_message = f"{requester_context}\n\n{current_message}"
         context_messages.append({
             "role": "user",
@@ -168,30 +259,76 @@ class AIService:
 
         print(f"   💬 Current message: \"{current_message[:50]}{'...' if len(current_message) > 50 else ''}\"")
         print(f"   👤 Requester: {username} ({role})")
-        if friendly_name:
-            print(f"   📛 Friendly name: {friendly_name}")
-        print(f"   📊 Total context messages: {len(context_messages)}")
 
-        # Define tools available to Claude
+        # Define tools
         tools = []
 
         # Google Sheets tool
         tools.append({
             "name": "fetch_employee_sheet",
-            "description": "Fetch task data from an employee's Google Sheet. First call without worksheet_name to get list of available worksheets. Then call again with specific worksheet_name. Use their friendly name (mitchell, granger, ignacio, conner) or if the requester is an employee asking about their own tasks, use 'me'.",
+            "description": "Fetch task data from an employee's Google Sheet. Use 'me' for the requester's own sheet, or use employee friendly names (mitchell/granger/ignacio/conner).",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "employee_name": {
                         "type": "string",
-                        "description": "Employee friendly name (mitchell/granger/ignacio/conner) or special keyword 'me' to fetch requester's own sheet"
+                        "description": "Employee friendly name or 'me' for requester's own sheet"
                     },
                     "worksheet_name": {
                         "type": "string",
-                        "description": "Optional: Specific worksheet/tab name to fetch data from. If not provided, returns list of available worksheets."
+                        "description": "Optional: Specific worksheet name. If not provided, returns list of available worksheets."
                     }
                 },
                 "required": ["employee_name"]
+            }
+        })
+
+        # Reminder tool - SIMPLIFIED!
+        tools.append({
+            "name": "create_reminder",
+            "description": "Create a reminder. Accept ANY natural time expression - don't constrain the user. If unclear, ask them to clarify.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "target_name": {
+                        "type": "string",
+                        "description": "Who to remind: 'me' (default) or employee friendly name (mitchell/granger/ignacio/conner)"
+                    },
+                    "reminder_text": {
+                        "type": "string",
+                        "description": "What to remind about - be specific and clear"
+                    },
+                    "time_expression": {
+                        "type": "string",
+                        "description": "FLEXIBLE time expression from user's message. Examples: 'tomorrow', 'in 2 hours', 'Monday at 3pm', 'next week', '3pm', 'tomorrow morning'. Accept ANY natural expression."
+                    }
+                },
+                "required": ["reminder_text", "time_expression"]
+            }
+        })
+
+        tools.append({
+            "name": "list_reminders",
+            "description": "List all pending reminders for the requester",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        })
+
+        tools.append({
+            "name": "cancel_reminder",
+            "description": "Cancel a reminder by its ID",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {
+                        "type": "integer",
+                        "description": "The ID of the reminder to cancel"
+                    }
+                },
+                "required": ["reminder_id"]
             }
         })
 
@@ -204,14 +341,13 @@ class AIService:
             })
 
         try:
-            max_iterations = 5  # Prevent infinite loops
+            max_iterations = 5
             iteration = 0
 
             while iteration < max_iterations:
                 iteration += 1
                 print(f"   🔄 Iteration {iteration}...")
 
-                # Call Anthropic API
                 response = self.client.messages.create(
                     model=CLAUDE_MODEL,
                     max_tokens=MAX_TOKENS,
@@ -220,7 +356,6 @@ class AIService:
                     tools=tools
                 )
 
-                # Check if Claude wants to use a tool
                 tool_use_blocks = [block for block in response.content if hasattr(block, 'type') and block.type == "tool_use"]
 
                 if not tool_use_blocks:
@@ -234,20 +369,16 @@ class AIService:
                         ai_response = "I'm not sure how to respond to that."
 
                     print(f"   ✅ AI response received ({len(ai_response)} chars)")
-                    print(f"   💭 Response preview: \"{ai_response[:80]}{'...' if len(ai_response) > 80 else ''}\"")
-
                     return ai_response
 
-                # Claude wants to use tools - execute them
+                # Execute tools
                 print(f"   🔧 Claude is using {len(tool_use_blocks)} tool(s)...")
 
-                # Add assistant's message (with tool use) to context
                 context_messages.append({
                     "role": "assistant",
                     "content": response.content
                 })
 
-                # Execute each tool and add results
                 tool_results = []
                 for tool_use in tool_use_blocks:
                     tool_name = tool_use.name
@@ -257,8 +388,14 @@ class AIService:
                     print(f"      🛠️  Executing tool: {tool_name}")
                     print(f"         Input: {tool_input}")
 
-                    # Execute the tool
-                    result = self._execute_tool(tool_name, tool_input, username)
+                    result = self._execute_tool(
+                        tool_name,
+                        tool_input,
+                        username,
+                        user_id,
+                        channel_id,
+                        guild_id
+                    )
 
                     print(f"         Result preview: {result[:100]}...")
 
@@ -268,15 +405,11 @@ class AIService:
                         "content": result
                     })
 
-                # Add tool results to context
                 context_messages.append({
                     "role": "user",
                     "content": tool_results
                 })
 
-                # Continue loop to let Claude process the tool results
-
-            # If we hit max iterations, return what we have
             return "I tried to process your request but ran into complexity limits. Please try rephrasing your question."
 
         except Exception as e:

@@ -1,13 +1,15 @@
 """
-Scheduler service for automated daily task reminders
+Scheduler service for automated daily task reminders AND user-created reminders
 """
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 import discord
 from datetime import datetime
 from typing import Dict, List
 
 from services.google_sheets import GoogleSheetsService
+from services.reminder_service import ReminderService
 from config.config import (
     EMPLOYEE_SHEETS,
     EMPLOYEE_FRIENDLY_NAMES,
@@ -19,26 +21,28 @@ from config.config import (
 
 
 class ReminderScheduler:
-    """Handles scheduled daily task reminders"""
+    """Handles scheduled daily task reminders AND user-created reminders"""
 
-    def __init__(self, bot: discord.Client, sheets_service: GoogleSheetsService):
+    def __init__(self, bot: discord.Client, sheets_service: GoogleSheetsService, reminder_service: ReminderService = None):
         """
         Initialize scheduler
 
         Args:
             bot: Discord bot instance
             sheets_service: Google Sheets service instance
+            reminder_service: Reminder service instance for user reminders
         """
         self.bot = bot
         self.sheets_service = sheets_service
+        self.reminder_service = reminder_service or ReminderService()
         self.scheduler = AsyncIOScheduler()
 
     def start(self):
         """Start the scheduler"""
-        print("\n⏰ Initializing Daily Reminder Scheduler...")
+        print("\n⏰ Initializing Reminder Scheduler...")
 
-        # Schedule daily reminders
-        trigger = CronTrigger(
+        # Schedule daily sheet-based reminders
+        daily_trigger = CronTrigger(
             hour=REMINDER_TIME_HOUR,
             minute=REMINDER_TIME_MINUTE,
             timezone='America/Toronto'  # Adjust to your timezone
@@ -46,20 +50,108 @@ class ReminderScheduler:
 
         self.scheduler.add_job(
             self.send_daily_reminders,
-            trigger=trigger,
+            trigger=daily_trigger,
             id='daily_task_reminders',
             name='Daily Task Reminders',
             replace_existing=True
         )
 
+        print(f"   ✅ Daily sheet reminders scheduled for {REMINDER_TIME_HOUR:02d}:{REMINDER_TIME_MINUTE:02d}")
+
+        # Schedule user-created reminder checks (every minute)
+        user_reminder_trigger = IntervalTrigger(minutes=1)
+
+        self.scheduler.add_job(
+            self.check_user_reminders,
+            trigger=user_reminder_trigger,
+            id='user_reminders_check',
+            name='User Reminders Check',
+            replace_existing=True
+        )
+
+        print(f"   ✅ User reminder checks scheduled (every 1 minute)")
+
         self.scheduler.start()
 
         print(f"   ✅ Scheduler started")
-        print(f"   ⏰ Daily reminders scheduled for {REMINDER_TIME_HOUR:02d}:{REMINDER_TIME_MINUTE:02d}")
         print("=" * 60)
 
+    async def check_user_reminders(self):
+        """Check for and send any pending user-created reminders"""
+        try:
+            # Get all pending reminders that should be sent now
+            reminders = self.reminder_service.get_pending_reminders()
+
+            if not reminders:
+                return  # No reminders to send
+
+            print(f"\n⏰ Found {len(reminders)} reminder(s) to send...")
+
+            for reminder in reminders:
+                try:
+                    await self._send_user_reminder(reminder)
+                except Exception as e:
+                    print(f"   ❌ Error sending reminder {reminder['id']}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+        except Exception as e:
+            print(f"   ❌ Error checking user reminders: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def _send_user_reminder(self, reminder: Dict):
+        """
+        Send a specific user-created reminder
+
+        Args:
+            reminder: Reminder dictionary from database
+        """
+        reminder_id = reminder['id']
+        target_username = reminder['target_username']
+        target_user_id = reminder.get('target_user_id')
+        reminder_text = reminder['reminder_text']
+        channel_id = reminder['channel_id']
+        creator_username = reminder['creator_username']
+
+        print(f"   📨 Sending reminder #{reminder_id} to {target_username}...")
+
+        # Get the channel
+        channel = self.bot.get_channel(int(channel_id))
+
+        if not channel:
+            print(f"      ❌ Could not find channel {channel_id}")
+            # Still mark as sent to avoid repeated attempts
+            self.reminder_service.mark_reminder_sent(reminder_id)
+            return
+
+        # Format the reminder message
+        mention = f"<@{target_user_id}>" if target_user_id else f"@{target_username}"
+
+        if creator_username == target_username:
+            # Self-reminder
+            message = f"⏰ {mention} Reminder: {reminder_text}"
+        else:
+            # Reminder from someone else
+            from utils.permissions import PermissionManager
+            creator_friendly = PermissionManager.get_employee_friendly_name(creator_username)
+            creator_display = creator_friendly.title() if creator_friendly else creator_username
+            message = f"⏰ {mention} Reminder from {creator_display}: {reminder_text}"
+
+        try:
+            await channel.send(message)
+            print(f"      ✅ Reminder #{reminder_id} sent successfully")
+
+            # Mark as sent
+            self.reminder_service.mark_reminder_sent(reminder_id)
+
+        except Exception as e:
+            print(f"      ❌ Error sending reminder message: {e}")
+            # Still mark as sent to avoid spam
+            self.reminder_service.mark_reminder_sent(reminder_id)
+
     async def send_daily_reminders(self):
-        """Send daily task reminders to all employees"""
+        """Send daily task reminders to all employees (from sheets)"""
         print("\n" + "=" * 60)
         print(f"⏰ DAILY REMINDER CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 60)
@@ -87,7 +179,7 @@ class ReminderScheduler:
 
     async def _send_employee_reminder(self, channel: discord.TextChannel, employee_username: str):
         """
-        Send reminder for a specific employee
+        Send reminder for a specific employee (from sheets)
 
         Args:
             channel: Discord channel to send reminder to
@@ -200,7 +292,7 @@ class ReminderScheduler:
             if any(keyword in col_lower for keyword in metadata_keywords):
                 continue
 
-            # ✅ NEW: Skip if it's a category keyword (SPORTS:, CASINO:, etc.)
+            # Skip if it's a category keyword (SPORTS:, CASINO:, etc.)
             if col_lower in CATEGORY_KEYWORDS or any(
                     col_lower.startswith(keyword) for keyword in CATEGORY_KEYWORDS):
                 continue
@@ -317,108 +409,6 @@ class ReminderScheduler:
         # Default - other
         return "other"
 
-    def _get_action_message(self, status: str, sportsbook: str, deposit: str, bet_type: str) -> str:
-        """
-        Generate specific action message based on status and sportsbook details
-
-        Args:
-            status: Task status
-            sportsbook: Sportsbook name
-            deposit: Deposit amount
-            bet_type: Bet type/requirement
-
-        Returns:
-            Action message string
-        """
-        if not status or status == "":
-            return f"Need to signup for {sportsbook}"
-
-        status_lower = status.lower()
-
-        # Verification statuses
-        if status_lower in ["verify", "verifyfix"]:
-            action = "verification fix" if status_lower == "verifyfix" else "verification"
-            return f"Complete {action} for {sportsbook}"
-
-        # Ready with amount
-        if status_lower in ["ready", "1k", "1000", "500", "2000", "2500", "3000", "5000"]:
-            amount = status_lower.replace('k', '000') if 'k' in status_lower else status_lower
-            if amount.isdigit():
-                return f"Complete ${amount} wager for {sportsbook}"
-            elif deposit:
-                return f"Complete {deposit} wager for {sportsbook}"
-            else:
-                return f"Complete wager for {sportsbook}"
-
-        # Deposit needed
-        if status_lower == "deposit":
-            if deposit:
-                return f"Complete {deposit} deposit for {sportsbook}"
-            else:
-                return f"Complete deposit for {sportsbook}"
-
-        # Signup ready
-        if "signed up ready" in status_lower:
-            if deposit:
-                return f"Complete {deposit} deposit for {sportsbook}"
-            else:
-                return f"Complete deposit for {sportsbook}"
-
-        # VIP status
-        if status_lower == "vip":
-            return f"VIP status achieved for {sportsbook} - proceed with next steps"
-
-        # Week tracking
-        if "week" in status_lower:
-            return f"Continue {status} for {sportsbook}"
-
-        # Default: use bet type or generic
-        if bet_type:
-            return f"Complete {bet_type} for {sportsbook}"
-        else:
-            return f"Complete task for {sportsbook}"
-
-    def _interpret_status(self, status: str) -> str:
-        """
-        Interpret status code into human-readable text
-
-        Args:
-            status: Raw status from sheet
-
-        Returns:
-            Human-readable interpretation
-        """
-        if not status or status == "":
-            return "Not started (blank)"
-
-        status_lower = status.lower()
-
-        # Direct interpretations
-        if status_lower == "verify":
-            return "Needs verification"
-        elif status_lower == "verifyfix":
-            return "Needs verification fix"
-        elif status_lower == "ready":
-            return "Ready to proceed"
-        elif status_lower == "signed up ready":
-            return "Account created, ready for deposit"
-        elif status_lower == "vip":
-            return "VIP status achieved"
-        elif status_lower == "deposit":
-            return "Needs deposit"
-        elif "week" in status_lower:
-            return f"{status} in progress"
-        elif status_lower in ["1k", "1000", "500", "2000", "3000", "5000"]:
-            # Dollar amounts
-            amount = status_lower.replace('k', '000') if 'k' in status_lower else status_lower
-            return f"Ready with ${amount}"
-        elif status_lower.replace('k', '').replace('$', '').replace(',', '').isdigit():
-            # Any other number
-            return f"Ready with ${status}"
-        else:
-            # Return as-is if we don't recognize it
-            return status
-
     def _format_reminder_message(self, employee_username: str, friendly_name: str, tasks_by_customer: Dict[str, Dict]) -> str:
         """
         Format reminder message with tasks grouped by action type
@@ -434,7 +424,7 @@ class ReminderScheduler:
         discord_id = EMPLOYEE_DISCORD_IDS.get(employee_username, employee_username)
         message_parts = [
             f"<@{discord_id}> \n\n"
-            f"Daily Task Reminder - {friendly_name}'s Tracking Sheet",
+            f"📋 Daily Task Reminder - {friendly_name}'s Tracking Sheet",
             ""
         ]
 
@@ -496,9 +486,8 @@ class ReminderScheduler:
             tasks_by_customer: Dict with tasks grouped by action type per customer
         """
         # Send header message
-        total_customers = len(tasks_by_customer)
-
-        header = f"@{employee_username} Daily Task Reminder - {friendly_name}'s Tracking Sheet"
+        discord_id = EMPLOYEE_DISCORD_IDS.get(employee_username, employee_username)
+        header = f"<@{discord_id}> Daily Task Reminder - {friendly_name}'s Tracking Sheet"
         await channel.send(header)
 
         # Define action type labels and order
@@ -584,8 +573,12 @@ class ReminderScheduler:
         Args:
             employee_username: Employee's Discord username
         """
+        import os
 
         tracking_file = f"tmp/blank_reminder_{employee_username}.txt"
+
+        # Ensure tmp directory exists
+        os.makedirs('tmp', exist_ok=True)
 
         try:
             with open(tracking_file, 'w') as f:

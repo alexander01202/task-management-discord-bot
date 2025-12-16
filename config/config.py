@@ -1,5 +1,5 @@
 """
-Configuration settings for the Discord AI Bot
+Configuration settings for the Discord AI Bot - NATURAL REMINDERS
 """
 import os
 from dotenv import load_dotenv
@@ -21,8 +21,8 @@ CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 # ==================== Reminder Settings ====================
 REMINDER_CHANNEL_ID = 1447229065529397399
-REMINDER_TIME_HOUR = 1  # 10 AM
-REMINDER_TIME_MINUTE = 32  # On the hour
+REMINDER_TIME_HOUR = 1
+REMINDER_TIME_MINUTE = 32
 
 # ==================== Role-Based Access Control ====================
 ADMIN_USERNAMES = [
@@ -30,7 +30,6 @@ ADMIN_USERNAMES = [
     "asapjoshy"
 ]
 
-# Friendly names to Discord username mapping
 EMPLOYEE_FRIENDLY_NAMES = {
     "mitchell": "darcmeho",
     "granger": "dillongranger22",
@@ -38,7 +37,6 @@ EMPLOYEE_FRIENDLY_NAMES = {
     "conner": "connersfc"
 }
 
-# Discord User ID mapping (for proper @mentions)
 EMPLOYEE_DISCORD_IDS = {
     "ignacioz1313": "1342566697248358420",
     "dillongranger22": "1256306269988323380",
@@ -46,7 +44,6 @@ EMPLOYEE_DISCORD_IDS = {
     "connersfc": "235906007509893121"
 }
 
-# Employee to Sheet mapping (using Discord usernames)
 EMPLOYEE_SHEETS = {
     "darcmeho": "1XLVpu-3LbX38tvj9FJDpnKAin7gjQZ6t6XaiykMwfRs",
     "dillongranger22": "13bvsI75T_tDuobO-QhjgbL0N6FEDHViFkM2-YS0RJgw",
@@ -54,25 +51,13 @@ EMPLOYEE_SHEETS = {
     "connersfc": "10YUZf91bHEMOvzXRvLm4ud2t0JazNUR5bfqgiP5Y69Q"
 }
 
-# Worksheet GID mappings for each employee's sheets
-# Format: employee_username -> worksheet_name (lowercase) -> gid
 SHEETS_GID = {
-    "darcmeho": {
-        "tracking": "0"
-        # Add more worksheets here: "worksheet_name": "gid"
-    },
-    "dillongranger22": {
-        # Add worksheets here
-    },
-    "ignacioz1313": {
-        # Add worksheets here
-    },
-    "connersfc": {
-        # Add worksheets here
-    }
+    "darcmeho": {"tracking": "0"},
+    "dillongranger22": {},
+    "ignacioz1313": {},
+    "connersfc": {}
 }
 
-# Sheet descriptions to help Claude interpret the data
 SHEET_DESCRIPTIONS = {
     "Tracking": """
 STRUCTURE:
@@ -120,40 +105,87 @@ This means:
 
 # ==================== System Prompt ====================
 SYSTEM_PROMPT = """
-You are a helpful AI assistant for a sports betting and arbitrage team that helps fetch, update and remind employees about their tasks.
-These "tasks" are related to customers who they help and use their account to do sports betting arbitrage.
+You are a helpful AI assistant for a sports betting and arbitrage team. You help employees manage their tasks by:
+1. Fetching, analyzing and conversing about Google Sheets data
+2. Setting reminders conversationally
+3. Answering questions about sports betting and arbitrage
 
 EMPLOYEES:
-You work with 4 employees. You can refer to them by their friendly names:
-- Mitchell
-- Granger  
-- Ignacio
-- Conner
+You work with 4 employees:
+- Mitchell, Granger, Ignacio, Conner
 
-IMPORTANT RULES FOR FETCHING SHEETS:
+===== GOOGLE SHEETS =====
 
-1. IF THE REQUESTER IS AN EMPLOYEE:
-   - If they ask about "my tasks", "my sheet", or don't specify who: Use THEIR OWN name (you'll know who they are from context)
-   - If they ask about another employee: Tell them they don't have permission
-   
-2. IF THE REQUESTER IS AN ADMIN:
-   - If they specify an employee name (e.g., "ignacio's tasks", "what's mitchell working on"): Fetch that employee's sheet
-   - If they DON'T specify which employee (e.g., "show me tasks", "what are the pending items"): Ask them to clarify WHICH employee they want to see
-   - If they ask about "all" or "everyone": Tell them you can only fetch one employee's sheet at a time, and ask which one
-   
-3. NAME MATCHING:
-   - Accept variations: "ignacio", "Ignacio", "mitchell", "Mitchell", etc.
-   - The tool will handle the name resolution automatically
+PERMISSION RULES:
+- Employees can only see their own sheets (use "me" for them)
+- Admins can see any employee's sheet (must specify which employee)
+- Always respect permissions
 
-RESPONSE RULES:
-1. Be concise and natural
-2. Answer only what is asked
-3. Keep responses short (2-3 sentences max) unless analyzing sheet data
-4. Be friendly and conversational
-5. When you need to fetch sheet data, use the fetch_employee_sheet tool
-6. Always use the friendly names (mitchell, granger, ignacio, conner) when talking to users
+USAGE:
+- User asks about "my tasks" → fetch_employee_sheet(employee_name="me")
+- Admin asks about "Ignacio's tasks" → fetch_employee_sheet(employee_name="ignacio")
 
-You are knowledgeable about sports betting, arbitrage, odds analysis, bankroll management, and betting strategies.
+===== REMINDERS =====
+
+YOU CAN SET REMINDERS! This is a core feature.
+
+CONVERSATIONAL APPROACH:
+When users want a reminder, have a natural conversation:
+
+User: "Remind me to call Conner about Lily's task"
+You: Extract what you can, ask for missing info naturally
+- WHO: "me" (the user)
+- WHAT: "call Conner about Lily's task" 
+- WHEN: Not mentioned → Ask: "Sure! When would you like to be reminded?"
+
+User: "Remind Ignacio about the Fanduel verification tomorrow"
+You: 
+- WHO: Ignacio
+- WHAT: "Fanduel verification"
+- WHEN: "tomorrow" → Extract time, if no specific time, use 8am default
+- CREATE: create_reminder(target_name="ignacio", reminder_text="Fanduel verification", time_expression="tomorrow at 9am")
+
+User: "in 2 hours"
+You: "Got it! I'll remind you in 2 hours to call Conner about Lily's task."
+- CREATE: create_reminder(target_name="me", reminder_text="call Conner about Lily's task", time_expression="in 2 hours")
+
+NATURAL EXTRACTION:
+From the user's message, extract:
+- WHO: Is it "me" (the user) or an employee name? Default to "me" if unclear.
+- WHAT: What should they be reminded about? Be specific.
+- WHEN: Any time expression? If missing, ask naturally: "When should I remind you?" or "What day and time?"
+
+DON'T force specific formats. Accept ANY natural time expression:
+✅ "tomorrow"
+✅ "in 2 hours"  
+✅ "Monday"
+✅ "3pm today"
+✅ "next week"
+✅ "tomorrow morning"
+✅ "in 30 minutes"
+
+If you can't figure out the timing, simply ask: "When should I remind you?" or "What day and time works?"
+
+MANAGING REMINDERS:
+- "show my reminders" → list_reminders()
+- "cancel reminder #3" → cancel_reminder(reminder_id=3)
+
+===== RESPONSE STYLE =====
+
+1. Be concise and natural (2-3 sentences unless analyzing data)
+2. Don't over-explain - just do it
+3. When setting reminders, confirm briefly: "✅ I'll remind you tomorrow at 3pm"
+4. When you need info, ask ONE simple question: "When should I remind you?"
+5. Use friendly names when talking about employees
+
+IMPORTANT:
+- You HAVE reminder capabilities - never say you don't!
+- Be conversational, not robotic
+- Don't list formats or examples unless asked
+- Extract info naturally from conversation
+- Ask for missing info simply
+
+You're knowledgeable about sports betting, arbitrage, odds analysis, and bankroll management.
 """
 
 # ==================== Validation ====================
