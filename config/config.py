@@ -13,6 +13,11 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_ANON_PUBLIC_KEY")
 GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "google_credentials.json")
 
+# NEW: Qdrant Cloud credentials
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 # ==================== Bot Settings ====================
 COMMAND_PREFIX = "!"
 MAX_CONTEXT_MESSAGES = 5
@@ -114,6 +119,23 @@ EMPLOYEES:
 You work with 4 employees:
 - Mitchell, Granger, Ignacio, Conner
 
+
+===== KNOWLEDGE BASE =====
+
+You have access to company SOPs, procedures, and documentation!
+
+When employees ask:
+- "How do I..." → Search knowledge base
+- "What should I do if..." → Search knowledge base
+- Process or policy questions → Search knowledge base
+
+IMPORTANT:
+- Always search knowledge base for procedural questions
+- Cite sources when answering from SOPs
+- If no relevant SOP found, say so clearly
+- Encourage employees to ask follow-up questions
+
+
 ===== REMINDERS =====
 
 YOU CAN SET REMINDERS! This is a core feature.
@@ -189,6 +211,12 @@ def validate_config():
         missing.append("SUPABASE_URL")
     if not SUPABASE_KEY:
         missing.append("SUPABASE_ANON_PUBLIC_KEY")
+    if not QDRANT_URL:
+        missing.append("QDRANT_URL")  # NEW
+    if not QDRANT_API_KEY:
+        missing.append("QDRANT_API_KEY")  # NEW
+    if not OPENAI_API_KEY:
+        missing.append("OPENAI_API_KEY")  # NEW
 
     if missing:
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")

@@ -13,6 +13,7 @@ from config.config import (
     MAX_CONTEXT_MESSAGES
 )
 from services.reminder_service import ReminderService
+from services.knowledge_base import KnowledgeBaseService
 
 
 class AIService:
@@ -23,6 +24,7 @@ class AIService:
         self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
         self.sheets_service = sheets_service
         self.reminder_service = reminder_service or ReminderService()
+        self.knowledge_base = KnowledgeBaseService()
 
     def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any], username: str, user_id: str, channel_id: str, guild_id: str = None) -> str:
         """Execute a tool call"""
@@ -201,6 +203,32 @@ class AIService:
             except Exception as e:
                 return f"Error cancelling reminder: {str(e)}"
 
+        elif tool_name == "search_knowledge_base":
+            query = tool_input.get("query", "").strip()
+
+            if not query:
+                return "Error: query is required"
+
+            # Search Qdrant
+            results = self.knowledge_base.search(
+                query=query,
+                top_k=3,
+                score_threshold=0.7
+            )
+
+            if not results:
+                return f"No relevant information found in knowledge base for: {query}"
+
+            # Format results for Claude
+            response = "Found relevant information from SOPs:\n\n"
+
+            for i, result in enumerate(results, 1):
+                response += f"**{i}. {result['document_name']}**\n"
+                response += f"*Relevance: {result['similarity']:.0%}*\n\n"
+                response += f"{result['chunk_content']}\n\n---\n\n"
+
+            return response
+
         return f"Unknown tool: {tool_name}"
 
     def _format_datetime_friendly(self, dt: datetime) -> str:
@@ -344,6 +372,22 @@ class AIService:
                     }
                 },
                 "required": ["reminder_id"]
+            }
+        })
+
+        # NEW: Knowledge base search tool
+        tools.append({
+            "name": "search_knowledge_base",
+            "description": "Search company SOPs, procedures, and documentation to answer employee questions. Use this when employees ask 'how do I...', 'what should I do if...', or reference specific sportsbooks/procedures.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The question or topic to search for"
+                    }
+                },
+                "required": ["query"]
             }
         })
 

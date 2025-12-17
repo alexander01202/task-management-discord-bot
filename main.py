@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from config import config
 from database import Database
+from handlers.sop_commands import SOPCommands
 from services import AIService, GoogleSheetsService, ReminderScheduler
 from handlers import MessageHandler
 
@@ -86,6 +87,21 @@ def setup_bot():
 
         # Start reminder scheduler
         reminder_scheduler.start()
+
+        print("\n🔧 Loading slash commands...")
+        try:
+            await bot.add_cog(SOPCommands(bot))
+            print("   ✅ SOP commands loaded")
+
+            # Sync slash commands with Discord
+            print("   🔄 Syncing slash commands with Discord...")
+            synced = await bot.tree.sync()
+            print(f"   ✅ Synced {len(synced)} slash command(s)")
+
+        except Exception as e:
+            print(f"   ❌ Error loading slash commands: {e}")
+            import traceback
+            traceback.print_exc()
 
         print("\n🤖 AI Agent is now ready - just mention me and ask about tasks!")
         print("=" * 60)
