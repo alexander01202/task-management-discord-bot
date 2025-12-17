@@ -1,5 +1,6 @@
 """
-AI Service - NATURAL REMINDER HANDLING
+AI Service - SIMPLIFIED with AI time extraction
+No more complex regex time parsing!
 """
 from typing import List, Dict, Any
 from anthropic import Anthropic
@@ -12,7 +13,6 @@ from config.config import (
     MAX_CONTEXT_MESSAGES
 )
 from services.reminder_service import ReminderService
-from utils.time_parser import TimeParser
 
 
 class AIService:
@@ -23,7 +23,6 @@ class AIService:
         self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
         self.sheets_service = sheets_service
         self.reminder_service = reminder_service or ReminderService()
-        self.time_parser = TimeParser()
 
     def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any], username: str, user_id: str, channel_id: str, guild_id: str = None) -> str:
         """Execute a tool call"""
@@ -43,7 +42,6 @@ class AIService:
                 else:
                     return "You are not an employee, so you don't have a personal sheet."
             else:
-                # Resolve friendly name to Discord username
                 from utils.permissions import PermissionManager
                 employee_username = PermissionManager.resolve_employee_name(employee_name)
 
@@ -51,14 +49,12 @@ class AIService:
                     available_names = PermissionManager.get_all_employee_names()
                     return f"I don't recognize '{employee_name}'. Available employees: {', '.join(available_names)}"
 
-            # Fetch sheet data
             query = worksheet_name if worksheet_name else None
             result = self.sheets_service.get_employee_sheet(employee_username, username, query)
 
             if result is None:
                 return f"Could not fetch sheet for {employee_name}. Either the user doesn't exist or you don't have permission."
 
-            # Handle list of worksheets
             if "worksheets" in result:
                 worksheets = result["worksheets"]
                 best_guess = result.get("best_guess")
@@ -71,7 +67,6 @@ class AIService:
                     worksheet_list = "\n".join([f"  • {ws}" for ws in worksheets])
                     return f"{employee_name}'s spreadsheet has {len(worksheets)} worksheets:\n{worksheet_list}\n\nWhich worksheet would you like to see?"
 
-            # Handle specific worksheet data
             if "data" in result:
                 data = result["data"]
                 ws_name = result.get("worksheet_name", "unknown")
@@ -96,33 +91,30 @@ class AIService:
             return f"Unexpected result format when fetching {employee_name}'s sheet."
 
         elif tool_name == "create_reminder":
-            # Extract parameters
+            # Extract parameters - Claude provides ISO datetime!
             target_name = tool_input.get("target_name", "").strip()
             reminder_text = tool_input.get("reminder_text", "").strip()
-            time_expression = tool_input.get("time_expression", "").strip()
+            reminder_datetime_iso = tool_input.get("reminder_datetime", "").strip()
 
             if not reminder_text:
                 return "Error: reminder_text is required"
 
-            if not time_expression:
-                return "Error: time_expression is required"
+            if not reminder_datetime_iso:
+                return "Error: reminder_datetime is required"
 
-            # Parse the time expression (flexible!)
-            reminder_time = self.time_parser.parse(time_expression)
-
-            if not reminder_time:
-                # Time parser couldn't figure it out
-                return f"I couldn't understand the time '{time_expression}'. Could you clarify? For example: 'tomorrow', 'in 2 hours', 'Monday at 3pm', or 'next week'."
+            # Parse the ISO datetime (simple!)
+            try:
+                reminder_time = datetime.fromisoformat(reminder_datetime_iso)
+            except ValueError:
+                return f"Error: Could not parse datetime '{reminder_datetime_iso}'. Please provide in ISO format."
 
             # Determine target username
             from utils.permissions import PermissionManager
 
             if not target_name or target_name.lower() in ["me", "myself"]:
-                # Reminder for the requester
                 target_username = username
                 target_user_id = user_id
             else:
-                # Reminder for someone else
                 target_username = PermissionManager.resolve_employee_name(target_name)
 
                 if not target_username:
@@ -134,7 +126,7 @@ class AIService:
 
             # Check if reminder is in the past
             if reminder_time <= datetime.now():
-                return f"That time is in the past. When should I actually remind you?"
+                return f"That time is in the past. Please provide a future time."
 
             # Create the reminder
             try:
@@ -149,7 +141,8 @@ class AIService:
                     target_user_id=target_user_id
                 )
 
-                formatted_time = self.time_parser.format_datetime(reminder_time)
+                # Format for user-friendly display
+                formatted_time = self._format_datetime_friendly(reminder_time)
 
                 if target_username == username:
                     return f"✅ I'll remind you {formatted_time}"
@@ -172,7 +165,7 @@ class AIService:
 
                 for i, reminder in enumerate(reminders, 1):
                     reminder_time = datetime.fromisoformat(reminder['reminder_time'])
-                    formatted_time = self.time_parser.format_datetime(reminder_time)
+                    formatted_time = self._format_datetime_friendly(reminder_time)
 
                     target = reminder['target_username']
                     text = reminder['reminder_text']
@@ -210,6 +203,26 @@ class AIService:
 
         return f"Unknown tool: {tool_name}"
 
+    def _format_datetime_friendly(self, dt: datetime) -> str:
+        """Format datetime for human-readable display"""
+        now = datetime.now()
+
+        # If today
+        if dt.date() == now.date():
+            return f"today at {dt.strftime('%I:%M %p')}"
+
+        # If tomorrow
+        from datetime import timedelta
+        if dt.date() == (now + timedelta(days=1)).date():
+            return f"tomorrow at {dt.strftime('%I:%M %p')}"
+
+        # If within a week
+        if dt.date() < (now + timedelta(days=7)).date():
+            return f"{dt.strftime('%A at %I:%M %p')}"
+
+        # Otherwise full date
+        return dt.strftime('%B %d, %Y at %I:%M %p')
+
     def generate_response(
         self,
         current_message: str,
@@ -224,7 +237,6 @@ class AIService:
 
         print(f"\n🤖 Calling AI model ({CLAUDE_MODEL})...")
 
-        # Build context messages
         context_messages = []
 
         if conversation_history:
@@ -241,7 +253,6 @@ class AIService:
                     "content": entry["bot_response"]
                 })
 
-        # Add requester context
         from utils.permissions import PermissionManager
         role = PermissionManager.get_user_role(username)
         friendly_name = PermissionManager.get_employee_friendly_name(username)
@@ -251,6 +262,10 @@ class AIService:
             requester_context += f", FriendlyName={friendly_name}"
         requester_context += "]"
 
+        # Add current date/time to help Claude
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        requester_context += f"\n[CURRENT DATETIME: {current_datetime}]"
+
         full_message = f"{requester_context}\n\n{current_message}"
         context_messages.append({
             "role": "user",
@@ -259,8 +274,8 @@ class AIService:
 
         print(f"   💬 Current message: \"{current_message[:50]}{'...' if len(current_message) > 50 else ''}\"")
         print(f"   👤 Requester: {username} ({role})")
+        print(f"   🕐 Current time: {current_datetime}")
 
-        # Define tools
         tools = []
 
         # Google Sheets tool
@@ -283,10 +298,10 @@ class AIService:
             }
         })
 
-        # Reminder tool - SIMPLIFIED!
+        # Reminder tool - AI EXTRACTS THE TIME!
         tools.append({
             "name": "create_reminder",
-            "description": "Create a reminder. Accept ANY natural time expression - don't constrain the user. If unclear, ask them to clarify.",
+            "description": "Create a reminder. YOU extract the date and time from the user's natural language and convert it to ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Current datetime is provided in the context.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -298,12 +313,12 @@ class AIService:
                         "type": "string",
                         "description": "What to remind about - be specific and clear"
                     },
-                    "time_expression": {
+                    "reminder_datetime": {
                         "type": "string",
-                        "description": "FLEXIBLE time expression from user's message. Examples: 'tomorrow', 'in 2 hours', 'Monday at 3pm', 'next week', '3pm', 'tomorrow morning'. Accept ANY natural expression."
+                        "description": "ISO 8601 datetime when to send reminder (YYYY-MM-DDTHH:MM:SS). YOU must extract this from user's natural language (e.g. 'tomorrow at 3pm' -> '2025-12-17T15:00:00', 'in 2 hours' -> calculate and provide ISO). Use the CURRENT DATETIME from context."
                     }
                 },
-                "required": ["reminder_text", "time_expression"]
+                "required": ["reminder_text", "reminder_datetime"]
             }
         })
 
@@ -332,7 +347,6 @@ class AIService:
             }
         })
 
-        # Web search tool
         if enable_web_search:
             tools.append({
                 "type": "web_search_20250305",
@@ -356,12 +370,15 @@ class AIService:
                     tools=tools
                 )
 
-                tool_use_blocks = [block for block in response.content if hasattr(block, 'type') and block.type == "tool_use"]
+                print(f"   🛑 Stop reason: {response.stop_reason}")
 
-                if not tool_use_blocks:
-                    # No tool use, extract final response
+                tool_use_blocks = [block for block in response.content if hasattr(block, 'type') and block.type == "tool_use"]
+                text_blocks = [block for block in response.content if hasattr(block, 'type') and block.type == "text"]
+
+                # If there's text and no tool use, return immediately
+                if not tool_use_blocks and text_blocks:
                     ai_response = ""
-                    for block in response.content:
+                    for block in text_blocks:
                         if hasattr(block, 'text'):
                             ai_response += block.text
 
@@ -370,6 +387,17 @@ class AIService:
 
                     print(f"   ✅ AI response received ({len(ai_response)} chars)")
                     return ai_response
+
+                # If there's text AND tool use, return the text (asking for clarification)
+                if tool_use_blocks and text_blocks:
+                    ai_response = ""
+                    for block in text_blocks:
+                        if hasattr(block, 'text'):
+                            ai_response += block.text
+
+                    if ai_response:
+                        print(f"   ✅ AI asking for clarification ({len(ai_response)} chars)")
+                        return ai_response
 
                 # Execute tools
                 print(f"   🔧 Claude is using {len(tool_use_blocks)} tool(s)...")
