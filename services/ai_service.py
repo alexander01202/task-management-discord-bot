@@ -433,15 +433,15 @@ class AIService:
                     return ai_response
 
                 # If there's text AND tool use, return the text (asking for clarification)
-                if tool_use_blocks and text_blocks:
-                    ai_response = ""
-                    for block in text_blocks:
-                        if hasattr(block, 'text'):
-                            ai_response += block.text
-
-                    if ai_response:
-                        print(f"   ✅ AI asking for clarification ({len(ai_response)} chars)")
-                        return ai_response
+                # if tool_use_blocks and text_blocks:
+                #     ai_response = ""
+                #     for block in text_blocks:
+                #         if hasattr(block, 'text'):
+                #             ai_response += block.text
+                #
+                #     if ai_response:
+                #         print(f"   ✅ AI asking for clarification ({len(ai_response)} chars)")
+                #         return ai_response
 
                 # Execute tools
                 print(f"   🔧 Claude is using {len(tool_use_blocks)} tool(s)...")

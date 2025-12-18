@@ -1,5 +1,5 @@
 """
-Knowledge base service using Qdrant Cloud
+Knowledge base service using Qdrant Cloud - FIXED
 Handles document storage, search, and deletion with metadata
 """
 from typing import List, Dict, Optional
@@ -196,7 +196,6 @@ class KnowledgeBaseService:
 
         try:
             # Scroll through all points to get unique documents
-            # This is not ideal for large collections, but works for your use case
             offset = None
             documents = {}
 
@@ -260,28 +259,39 @@ class KnowledgeBaseService:
         print(f"   Query: {query[:50]}...")
 
         try:
-            # Generate query embedding
+            # Generate query embedding first
             query_embedding = self._generate_query_embedding(query)
 
-            # Search in Qdrant
-            search_results = self.qdrant.search(
+            # Search in Qdrant using query_points()
+            # This is the standard method for vector similarity search in Qdrant 1.12+
+            search_results = self.qdrant.query_points(
                 collection_name=self.COLLECTION_NAME,
-                query_vector=query_embedding,
+                query=query_embedding,
                 limit=top_k,
-                score_threshold=score_threshold
+                score_threshold=score_threshold,
+                with_payload=True,
+                with_vectors=False  # We don't need vectors in response, just metadata
             )
 
-            # Format results
+            # query_points() returns QueryResponse with .points list
             results = []
-            for result in search_results:
+
+            # Access results from .points attribute
+            points = search_results.points if hasattr(search_results, 'points') else search_results
+
+            for result in points:
+                # Extract payload and score
+                payload = result.payload if hasattr(result, 'payload') else result.get('payload', {})
+                score = result.score if hasattr(result, 'score') else result.get('score', 0.0)
+
                 results.append({
-                    'document_name': result.payload['name_of_file'],
-                    'description': result.payload['description'],
-                    'chunk_content': result.payload['chunk_content'],
-                    'chunk_index': result.payload['chunk_index'],
-                    'similarity': result.score,
-                    'timestamp': result.payload['timestamp'],
-                    'uploaded_by': result.payload['uploaded_by']
+                    'document_name': payload.get('name_of_file', 'Unknown'),
+                    'description': payload.get('description', ''),
+                    'chunk_content': payload.get('chunk_content', ''),
+                    'chunk_index': payload.get('chunk_index', 0),
+                    'similarity': score,
+                    'timestamp': payload.get('timestamp', ''),
+                    'uploaded_by': payload.get('uploaded_by', '')
                 })
 
             print(f"   ✅ Found {len(results)} relevant chunks")
@@ -293,6 +303,19 @@ class KnowledgeBaseService:
 
         except Exception as e:
             print(f"   ❌ Error searching: {e}")
+            print(f"   Error type: {type(e).__name__}")
+            import traceback
+            print(f"   Full traceback:")
+            traceback.print_exc()
+
+            # Try to provide helpful debugging info
+            print(f"\n   Debug info:")
+            print(f"   - Collection: {self.COLLECTION_NAME}")
+            print(f"   - Query embedding type: {type(query_embedding)}")
+            print(f"   - Query embedding length: {len(query_embedding) if hasattr(query_embedding, '__len__') else 'N/A'}")
+            print(f"   - Top K: {top_k}")
+            print(f"   - Score threshold: {score_threshold}")
+
             return []
 
     def _generate_query_embedding(self, query: str) -> List[float]:
@@ -314,15 +337,3 @@ class KnowledgeBaseService:
         except Exception as e:
             print(f"   ❌ Error getting collection info: {e}")
             return {}
-
-
-# Example usage
-if __name__ == "__main__":
-    kb = KnowledgeBaseService()
-
-    # Test search
-    results = kb.search("What do I do if verification is pending?", top_k=3)
-
-    for result in results:
-        print(f"\n{result['document_name']} ({result['similarity']:.0%})")
-        print(result['chunk_content'][:200] + "...")
