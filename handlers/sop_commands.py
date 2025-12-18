@@ -40,13 +40,122 @@ class SOPCommands(commands.Cog):
         file_path = f"uploads/{file.filename}"
         await file.save(file_path)
 
-        # Show action selector
-        view = ActionSelectorView(self, file_path, file.filename, username)
+        # Show formatting message
         await interaction.response.send_message(
-            f"✅ **File received:** {file.filename}\n\n**What would you like to do?**",
-            view=view,
+            "⏳ **Formatting for ingestion...**\n\nOptimizing document structure for RAG...",
             ephemeral=True
         )
+
+        # Read original file
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                original_text = f.read()
+        except Exception as e:
+            print(f"❌ Error reading file: {e}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            await interaction.edit_original_response(
+                content=f"❌ **Error reading file:**\n```\n{str(e)}\n```"
+            )
+            return
+
+        # Reformat with AI
+        try:
+            reformatted_text = await self._reformat_with_ai(original_text)
+
+            # Show reformatted text with accept/edit/decline buttons
+            view = ReformattedReviewView(self, file_path, file.filename, username, reformatted_text, original_text)
+
+            # Truncate for display if too long
+            display_text = reformatted_text
+            if len(display_text) > 1800:
+                display_text = display_text[:1800] + "\n\n... (truncated for display)"
+
+            await interaction.edit_original_response(
+                content=f"✅ **Document reformatted!**\n\n**Preview:**\n```\n{display_text}\n```\n\n**Please review and choose an action:**",
+                view=view
+            )
+
+        except Exception as e:
+            print(f"❌ Error reformatting: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # Cleanup on error
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+            await interaction.edit_original_response(
+                content=f"❌ **Error during AI formatting:**\n```\n{str(e)}\n```\n\nPlease try again."
+            )
+
+    async def _reformat_with_ai(self, text: str) -> str:
+        """
+        Reformat document using Claude for optimal RAG ingestion
+
+        Args:
+            text: Original document text
+
+        Returns:
+            Reformatted text optimized for vector database
+        """
+        from anthropic import Anthropic
+        from config.config import ANTHROPIC_API_KEY
+
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        prompt = """Recreate this document text to be more formatted, structured and designed for ingestion to a vector database for RAG.
+            Original document:
+            """
+
+        # Enable streaming for extended thinking
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=28000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 10000
+            },
+            messages=[
+                {"role": "user", "content": prompt + text}
+            ],
+            stream=True  # Required for extended thinking
+        )
+
+        # Handle the streaming response
+        thinking_content = []
+        text_content = []
+
+        with response as stream:
+            for event in stream:
+                # Handle content block start
+                if event.type == "content_block_start":
+                    if event.content_block.type == "thinking":
+                        print("\n[Thinking started...]")
+                    elif event.content_block.type == "text":
+                        print("\n[Response started...]")
+
+                # Handle content deltas (incremental content)
+                elif event.type == "content_block_delta":
+                    if event.delta.type == "thinking_delta":
+                        thinking_content.append(event.delta.thinking)
+                        print(event.delta.thinking, end="", flush=True)
+                    elif event.delta.type == "text_delta":
+                        text_content.append(event.delta.text)
+                        print(event.delta.text, end="", flush=True)
+
+                # Handle content block stop
+                elif event.type == "content_block_stop":
+                    print()  # New line after block completes
+
+        # Join all the collected content
+        full_thinking = "".join(thinking_content)
+        full_text = "".join(text_content)
+
+        print(f"\n\nFinal thinking summary: {full_thinking[:500]}...")  # First 500 chars
+        print(f"\nFinal response length: {len(full_text)} characters")
+
+        return full_text
 
     @app_commands.command(name="sop_list", description="List all SOP documents")
     async def sop_list(self, interaction: discord.Interaction):
@@ -108,6 +217,132 @@ class SOPCommands(commands.Cog):
 
 
 # ==================== VIEWS ====================
+
+class ReformattedReviewView(View):
+    """Review reformatted text with Accept/Edit/Decline options"""
+
+    def __init__(self, cog, file_path, filename, username, reformatted_text, original_text):
+        super().__init__(timeout=600)  # 10 minutes
+        self.cog = cog
+        self.file_path = file_path
+        self.filename = filename
+        self.username = username
+        self.reformatted_text = reformatted_text
+        self.original_text = original_text
+
+        # Accept button
+        accept_btn = Button(label="✅ Accept", style=discord.ButtonStyle.success)
+        accept_btn.callback = self.accept
+        self.add_item(accept_btn)
+
+        # Edit button
+        edit_btn = Button(label="✏️ Edit", style=discord.ButtonStyle.primary)
+        edit_btn.callback = self.edit
+        self.add_item(edit_btn)
+
+        # Decline button
+        decline_btn = Button(label="❌ Decline", style=discord.ButtonStyle.danger)
+        decline_btn.callback = self.decline
+        self.add_item(decline_btn)
+
+    async def accept(self, interaction: discord.Interaction):
+        """Accept reformatted text and continue to upload flow"""
+        # Save reformatted text to file
+        try:
+            with open(self.file_path, 'w', encoding='utf-8') as f:
+                f.write(self.reformatted_text)
+        except Exception as e:
+            await interaction.response.edit_message(
+                content=f"❌ Error saving reformatted text: {str(e)}",
+                view=None
+            )
+            if os.path.exists(self.file_path):
+                os.remove(self.file_path)
+            return
+
+        # Continue to New/Replace selector
+        view = ActionSelectorView(self.cog, self.file_path, self.filename, self.username)
+        await interaction.response.edit_message(
+            content=f"✅ **Reformatted text accepted!**\n\n**File:** {self.filename}\n\n**What would you like to do?**",
+            view=view
+        )
+
+    async def edit(self, interaction: discord.Interaction):
+        """Show modal to edit the reformatted text"""
+        modal = EditReformattedModal(self, self.reformatted_text)
+        await interaction.response.send_modal(modal)
+
+    async def decline(self, interaction: discord.Interaction):
+        """Decline and cancel entire upload"""
+        if os.path.exists(self.file_path):
+            os.remove(self.file_path)
+
+        await interaction.response.edit_message(
+            content="❌ **Upload cancelled**\n\nReformatted text declined.",
+            view=None
+        )
+
+
+class EditReformattedModal(discord.ui.Modal, title="Edit Reformatted Text"):
+    """Modal for editing reformatted text"""
+
+    def __init__(self, parent_view: ReformattedReviewView, current_text: str):
+        super().__init__()
+        self.parent_view = parent_view
+
+        # Discord modals have 4000 character limit
+        # Truncate if needed
+        text_to_show = current_text
+        if len(text_to_show) > 3900:
+            text_to_show = text_to_show[:3900] + "\n\n... (truncated - full text preserved)"
+
+        self.text_input = discord.ui.TextInput(
+            label="Document Text",
+            style=discord.TextStyle.paragraph,
+            default=text_to_show,
+            required=True,
+            max_length=4000
+        )
+        self.add_item(self.text_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        """Handle edited text submission"""
+        edited_text = self.text_input.value
+
+        # Update the reformatted text
+        self.parent_view.reformatted_text = edited_text
+
+        # Save to file
+        try:
+            with open(self.parent_view.file_path, 'w', encoding='utf-8') as f:
+                f.write(edited_text)
+        except Exception as e:
+            await interaction.response.send_message(
+                content=f"❌ Error saving edited text: {str(e)}",
+                ephemeral=True
+            )
+            return
+
+        # Show updated preview with same buttons
+        display_text = edited_text
+        if len(display_text) > 1800:
+            display_text = display_text[:1800] + "\n\n... (truncated for display)"
+
+        # Recreate view with updated text
+        new_view = ReformattedReviewView(
+            self.parent_view.cog,
+            self.parent_view.file_path,
+            self.parent_view.filename,
+            self.parent_view.username,
+            edited_text,
+            self.parent_view.original_text
+        )
+
+        await interaction.response.edit_message(
+            content=f"✅ **Text updated!**\n\n**Preview:**\n```\n{display_text}\n```\n\n**Please review and choose an action:**",
+            view=new_view
+        )
+
 
 class ActionSelectorView(View):
     """Step 1: Choose New or Replace"""
