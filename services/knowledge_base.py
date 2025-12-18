@@ -242,7 +242,7 @@ class KnowledgeBaseService:
             self,
             query: str,
             top_k: int = 5,
-            score_threshold: float = 0.7
+            score_threshold: float = 0.5
     ) -> List[Dict]:
         """
         Search knowledge base for relevant chunks

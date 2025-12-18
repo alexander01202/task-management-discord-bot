@@ -212,8 +212,7 @@ class AIService:
             # Search Qdrant
             results = self.knowledge_base.search(
                 query=query,
-                top_k=3,
-                score_threshold=0.7
+                top_k=3
             )
 
             if not results:
