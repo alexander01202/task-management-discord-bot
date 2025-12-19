@@ -29,6 +29,13 @@ REMINDER_CHANNEL_ID = 1447229065529397399
 REMINDER_TIME_HOUR = 1
 REMINDER_TIME_MINUTE = 32
 
+# ==================== End of day report Settings ====================
+SHIFT_REPORT_CHANNEL_ID = 1451272602948472924
+BASELINE_SNAPSHOT_HOUR = 8
+BASELINE_SNAPSHOT_MINUTE = 0
+SHIFT_REPORT_HOUR = 23
+SHIFT_REPORT_MINUTE = 0
+
 # ==================== Role-Based Access Control ====================
 ADMIN_USERNAMES = [
     "alexthegreat2642",

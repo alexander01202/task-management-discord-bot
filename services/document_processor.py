@@ -43,12 +43,12 @@ class DocumentProcessor:
 
     def chunk_text(self, text: str) -> List[Dict[str, any]]:
         """
-        Split text into chunks based on paragraphs and token limits
+        Split text into chunks based on paragraphs and token limits WITH OVERLAP
 
         Strategy:
         1. Split by double newlines (paragraphs)
         2. Group paragraphs into chunks up to chunk_size
-        3. Maintain overlap between chunks for context
+        3. Maintain overlap between chunks for context (last N tokens of previous chunk)
 
         Args:
             text: Full document text
@@ -56,7 +56,7 @@ class DocumentProcessor:
         Returns:
             List of chunks with metadata
         """
-        print(f"\n📄 Chunking document...")
+        print(f"\n📄 Chunking document with {self.chunk_overlap} token overlap...")
 
         # Split into paragraphs
         paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
@@ -66,6 +66,7 @@ class DocumentProcessor:
         current_chunk = ""
         current_tokens = 0
         chunk_index = 0
+        previous_overlap_text = ""  # Track text to carry over
 
         for para in paragraphs:
             para_tokens = self.count_tokens(para)
@@ -90,15 +91,19 @@ class DocumentProcessor:
                             })
                             chunk_index += 1
 
-                        current_chunk = sentence
-                        current_tokens = sentence_tokens
+                            # Get overlap text from end of current chunk
+                            previous_overlap_text = self._get_overlap_text(current_chunk)
+
+                        # Start new chunk with overlap from previous
+                        current_chunk = previous_overlap_text + sentence
+                        current_tokens = self.count_tokens(current_chunk)
 
             # Normal case: add paragraph to current chunk
             elif current_tokens + para_tokens < self.chunk_size:
                 current_chunk += para + "\n\n"
                 current_tokens += para_tokens
 
-            # Start new chunk
+            # Start new chunk with overlap
             else:
                 if current_chunk:
                     chunks.append({
@@ -108,8 +113,12 @@ class DocumentProcessor:
                     })
                     chunk_index += 1
 
-                current_chunk = para + "\n\n"
-                current_tokens = para_tokens
+                    # Get overlap text from end of current chunk
+                    previous_overlap_text = self._get_overlap_text(current_chunk)
+
+                # Start new chunk with overlap + new paragraph
+                current_chunk = previous_overlap_text + para + "\n\n"
+                current_tokens = self.count_tokens(current_chunk)
 
         # Add final chunk
         if current_chunk:
@@ -123,6 +132,35 @@ class DocumentProcessor:
         print(f"   Average chunk size: {sum(c['token_count'] for c in chunks) / len(chunks):.0f} tokens")
 
         return chunks
+
+    def _get_overlap_text(self, text: str) -> str:
+        """
+        Extract the last N tokens from text to use as overlap for next chunk
+
+        Args:
+            text: Text to extract overlap from
+
+        Returns:
+            Text containing approximately chunk_overlap tokens from the end
+        """
+        tokens = self.encoding.encode(text)
+
+        if len(tokens) <= self.chunk_overlap:
+            # If text is shorter than overlap size, return entire text
+            return text + "\n\n"
+
+        # Get last chunk_overlap tokens
+        overlap_tokens = tokens[-self.chunk_overlap:]
+        overlap_text = self.encoding.decode(overlap_tokens)
+
+        # Try to start at a sentence boundary for cleaner overlap
+        # Find the first '. ' or start of text
+        sentence_start = overlap_text.find('. ')
+        if sentence_start != -1 and sentence_start < len(overlap_text) // 2:
+            # Start after the period if it's in the first half
+            overlap_text = overlap_text[sentence_start + 2:]
+
+        return overlap_text + "\n\n"
 
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
@@ -152,11 +190,11 @@ class DocumentProcessor:
             raise
 
     def process_document(
-            self,
-            file_path: str,
-            title: str,
-            category: str = None,
-            description: str = None
+        self,
+        file_path: str,
+        title: str,
+        category: str = None,
+        description: str = None
     ) -> Tuple[str, List[Dict]]:
         """
         Complete document processing pipeline
@@ -170,9 +208,9 @@ class DocumentProcessor:
         Returns:
             Tuple of (full_text, chunks_with_embeddings)
         """
-        print(f"\n{'=' * 60}")
+        print(f"\n{'='*60}")
         print(f"📚 Processing Document: {title}")
-        print(f"{'=' * 60}")
+        print(f"{'='*60}")
 
         # Read file
         text = self.read_text_file(file_path)
@@ -190,6 +228,6 @@ class DocumentProcessor:
             chunk['embedding'] = embedding
 
         print(f"✅ Document processing complete!")
-        print(f"{'=' * 60}\n")
+        print(f"{'='*60}\n")
 
         return text, chunks

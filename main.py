@@ -1,6 +1,6 @@
 """
 Discord AI Bot - Main Entry Point
-Milestone 2: Autonomous AI Agent with Google Sheets Tool Calling
+Includes Shift Summary Feature (Milestone 6)
 """
 import discord
 from discord.ext import commands
@@ -8,7 +8,7 @@ from discord.ext import commands
 from config import config
 from database import Database
 from handlers.sop_commands import SOPCommands
-from services import AIService, GoogleSheetsService, ReminderScheduler
+from services import AIService, GoogleSheetsService, ReminderScheduler, ShiftReportService
 from handlers import MessageHandler
 
 
@@ -33,6 +33,10 @@ def setup_bot():
     database = Database()
     sheets_service = GoogleSheetsService()
     ai_service = AIService(sheets_service)  # Pass sheets service to AI for tool calling
+
+    # NEW: Initialize shift report service
+    shift_report_service = ShiftReportService(sheets_service)
+
     print("   ✅ All services initialized")
 
     # Configure Discord intents
@@ -54,9 +58,13 @@ def setup_bot():
     message_handler = MessageHandler(database, ai_service)
     print("   ✅ Handler initialized")
 
-    # Initialize reminder scheduler
-    print("\n⏰ Initializing reminder scheduler...")
-    reminder_scheduler = ReminderScheduler(bot, sheets_service)
+    # Initialize reminder scheduler (NOW with shift report service)
+    print("\n⏰ Initializing scheduler...")
+    reminder_scheduler = ReminderScheduler(
+        bot,
+        sheets_service,
+        shift_report_service=shift_report_service  # NEW: Pass shift report service
+    )
     print("   ✅ Scheduler initialized")
 
 
@@ -103,7 +111,11 @@ def setup_bot():
             import traceback
             traceback.print_exc()
 
-        print("\n🤖 AI Agent is now ready - just mention me and ask about tasks!")
+        print("\n🤖 AI Agent is now ready!")
+        print("   - Chat with me by mentioning @bot")
+        print("   - Daily task reminders active")
+        print("   - User reminders active")
+        print("   - 📊 Shift reports active (8 AM baseline, 11 PM report)")
         print("=" * 60)
 
     @bot.event

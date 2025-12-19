@@ -1,5 +1,8 @@
 """
-Scheduler service for automated daily task reminders AND user-created reminders
+Scheduler service for:
+- Automated daily task reminders
+- User-created reminders
+- Shift summary reports (baseline snapshots + evening report)
 """
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -10,20 +13,32 @@ from typing import Dict, List
 
 from services.google_sheets import GoogleSheetsService
 from services.reminder_service import ReminderService
+from services.shift_report_service import ShiftReportService
 from config.config import (
     EMPLOYEE_SHEETS,
     EMPLOYEE_FRIENDLY_NAMES,
     REMINDER_CHANNEL_ID,
     REMINDER_TIME_HOUR,
     REMINDER_TIME_MINUTE,
-    EMPLOYEE_DISCORD_IDS
+    EMPLOYEE_DISCORD_IDS,
+    SHIFT_REPORT_CHANNEL_ID,
+    BASELINE_SNAPSHOT_HOUR,
+    BASELINE_SNAPSHOT_MINUTE,
+    SHIFT_REPORT_HOUR,
+    SHIFT_REPORT_MINUTE
 )
 
 
 class ReminderScheduler:
-    """Handles scheduled daily task reminders AND user-created reminders"""
+    """Handles all scheduled jobs: reminders, shift reports, etc."""
 
-    def __init__(self, bot: discord.Client, sheets_service: GoogleSheetsService, reminder_service: ReminderService = None):
+    def __init__(
+        self,
+        bot: discord.Client,
+        sheets_service: GoogleSheetsService,
+        reminder_service: ReminderService = None,
+        shift_report_service: ShiftReportService = None
+    ):
         """
         Initialize scheduler
 
@@ -31,21 +46,23 @@ class ReminderScheduler:
             bot: Discord bot instance
             sheets_service: Google Sheets service instance
             reminder_service: Reminder service instance for user reminders
+            shift_report_service: Shift report service instance
         """
         self.bot = bot
         self.sheets_service = sheets_service
         self.reminder_service = reminder_service or ReminderService()
+        self.shift_report_service = shift_report_service or ShiftReportService(sheets_service)
         self.scheduler = AsyncIOScheduler()
 
     def start(self):
-        """Start the scheduler"""
-        print("\n⏰ Initializing Reminder Scheduler...")
+        """Start the scheduler with all jobs"""
+        print("\n⏰ Initializing Scheduler...")
 
-        # Schedule daily sheet-based reminders
+        # ==================== DAILY TASK REMINDERS ====================
         daily_trigger = CronTrigger(
             hour=REMINDER_TIME_HOUR,
             minute=REMINDER_TIME_MINUTE,
-            timezone='America/Toronto'  # Adjust to your timezone
+            timezone='America/Toronto'
         )
 
         self.scheduler.add_job(
@@ -58,7 +75,7 @@ class ReminderScheduler:
 
         print(f"   ✅ Daily sheet reminders scheduled for {REMINDER_TIME_HOUR:02d}:{REMINDER_TIME_MINUTE:02d}")
 
-        # Schedule user-created reminder checks (every minute)
+        # ==================== USER REMINDERS ====================
         user_reminder_trigger = IntervalTrigger(minutes=1)
 
         self.scheduler.add_job(
@@ -71,10 +88,70 @@ class ReminderScheduler:
 
         print(f"   ✅ User reminder checks scheduled (every 1 minute)")
 
+        # ==================== BASELINE SNAPSHOTS ====================
+        baseline_trigger = CronTrigger(
+            hour=BASELINE_SNAPSHOT_HOUR,
+            minute=BASELINE_SNAPSHOT_MINUTE,
+            timezone='America/Toronto'
+        )
+
+        self.scheduler.add_job(
+            self.take_baseline_snapshots,
+            trigger=baseline_trigger,
+            id='baseline_snapshots',
+            name='Baseline Snapshots',
+            replace_existing=True
+        )
+
+        print(f"   ✅ Baseline snapshots scheduled for {BASELINE_SNAPSHOT_HOUR:02d}:{BASELINE_SNAPSHOT_MINUTE:02d}")
+
+        # ==================== SHIFT REPORT ====================
+        shift_report_trigger = CronTrigger(
+            hour=SHIFT_REPORT_HOUR,
+            minute=SHIFT_REPORT_MINUTE,
+            timezone='America/Toronto'
+        )
+
+        self.scheduler.add_job(
+            self.generate_shift_report,
+            trigger=shift_report_trigger,
+            id='shift_report',
+            name='Shift Report',
+            replace_existing=True
+        )
+
+        print(f"   ✅ Shift report scheduled for {SHIFT_REPORT_HOUR:02d}:{SHIFT_REPORT_MINUTE:02d}")
+
+        # Start the scheduler
         self.scheduler.start()
 
         print(f"   ✅ Scheduler started")
         print("=" * 60)
+
+    # ==================== SHIFT REPORT JOBS ====================
+
+    async def take_baseline_snapshots(self):
+        """Take morning baseline snapshots (called at 8 AM)"""
+        try:
+            await self.shift_report_service.take_baseline_snapshots()
+        except Exception as e:
+            print(f"❌ Error in baseline snapshot job: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def generate_shift_report(self):
+        """Generate evening shift report (called at 11 PM)"""
+        try:
+            await self.shift_report_service.generate_shift_report(
+                bot=self.bot,
+                channel_id=SHIFT_REPORT_CHANNEL_ID
+            )
+        except Exception as e:
+            print(f"❌ Error in shift report job: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ==================== USER REMINDERS ====================
 
     async def check_user_reminders(self):
         """Check for and send any pending user-created reminders"""
@@ -149,6 +226,8 @@ class ReminderScheduler:
             print(f"      ❌ Error sending reminder message: {e}")
             # Still mark as sent to avoid spam
             self.reminder_service.mark_reminder_sent(reminder_id)
+
+    # ==================== DAILY TASK REMINDERS ====================
 
     async def send_daily_reminders(self):
         """Send daily task reminders to all employees (from sheets)"""
