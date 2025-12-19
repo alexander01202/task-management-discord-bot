@@ -36,6 +36,9 @@ BASELINE_SNAPSHOT_MINUTE = 0
 SHIFT_REPORT_HOUR = 23
 SHIFT_REPORT_MINUTE = 0
 
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 150
+
 # ==================== Role-Based Access Control ====================
 ADMIN_USERNAMES = [
     "alexthegreat2642",

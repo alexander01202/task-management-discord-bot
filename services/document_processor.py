@@ -5,7 +5,7 @@ Handles chunking and embedding generation
 from typing import List, Dict, Tuple
 import tiktoken
 from openai import OpenAI
-from config.config import OPENAI_API_KEY
+from config.config import OPENAI_API_KEY, CHUNK_SIZE, CHUNK_OVERLAP
 
 
 class DocumentProcessor:
@@ -17,8 +17,8 @@ class DocumentProcessor:
         self.encoding = tiktoken.get_encoding("cl100k_base")  # For counting tokens
 
         # Chunking parameters
-        self.chunk_size = 1500  # tokens
-        self.chunk_overlap = 150  # tokens
+        self.chunk_size = CHUNK_SIZE  # tokens
+        self.chunk_overlap = CHUNK_OVERLAP  # tokens
 
     def read_text_file(self, file_path: str) -> str:
         """
@@ -209,7 +209,7 @@ class DocumentProcessor:
 
         try:
             response = self.client.embeddings.create(
-                model="text-embedding-3-small",  # 1536 dimensions, cheap
+                model="text-embedding-3-large",  # 3072 dimensions, quality
                 input=texts
             )
 

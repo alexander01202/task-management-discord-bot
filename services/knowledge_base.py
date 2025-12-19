@@ -14,7 +14,7 @@ from config.config import QDRANT_URL, QDRANT_API_KEY, OPENAI_API_KEY
 class KnowledgeBaseService:
     """Manages knowledge base using Qdrant Cloud"""
 
-    COLLECTION_NAME = "sop_documents"
+    COLLECTION_NAME = "TNP_knowledge_base"
 
     def __init__(self):
         """Initialize Qdrant Cloud and OpenAI clients"""
@@ -53,7 +53,7 @@ class KnowledgeBaseService:
             self.qdrant.create_collection(
                 collection_name=self.COLLECTION_NAME,
                 vectors_config=VectorParams(
-                    size=1536,  # OpenAI text-embedding-3-small dimension
+                    size=3072,  # OpenAI text-embedding-3-large dimension
                     distance=Distance.COSINE
                 )
             )
@@ -321,7 +321,7 @@ class KnowledgeBaseService:
     def _generate_query_embedding(self, query: str) -> List[float]:
         """Generate embedding for search query"""
         response = self.openai.embeddings.create(
-            model="text-embedding-3-small",
+            model="text-embedding-3-large",
             input=[query]
         )
         return response.data[0].embedding

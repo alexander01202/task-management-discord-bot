@@ -468,7 +468,7 @@ class AIService:
                         guild_id
                     )
 
-                    print(f"         Result preview: {result[:100]}...")
+                    print(f"Result preview: {result[:100]}...")
 
                     tool_results.append({
                         "type": "tool_result",
