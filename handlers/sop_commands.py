@@ -105,8 +105,14 @@ class SOPCommands(commands.Cog):
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
         prompt = """Recreate this document text to be more formatted, structured and designed for ingestion to a vector database for RAG.
-            Original document:
-            """
+
+**CRITICAL: Use "---" (three dashes) as a section separator.**
+- Add "---" after EACH complete section
+- This delimiter helps with chunking splitting for the vector database
+- This delimiter is so we do not lose context when splitting into chunks so ensure you are putting the delimiter where it'll help achieve that goal.
+
+Original document:
+"""
 
         # Enable streaming for extended thinking
         response = client.messages.create(

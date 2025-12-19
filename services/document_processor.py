@@ -43,11 +43,11 @@ class DocumentProcessor:
 
     def chunk_text(self, text: str) -> List[Dict[str, any]]:
         """
-        Split text into chunks based on paragraphs and token limits WITH OVERLAP
+        Split text into chunks based on section separators (---) and token limits WITH OVERLAP
 
         Strategy:
-        1. Split by double newlines (paragraphs)
-        2. Group paragraphs into chunks up to chunk_size
+        1. Split by "---" (section separators)
+        2. Group sections into chunks up to chunk_size
         3. Maintain overlap between chunks for context (last N tokens of previous chunk)
 
         Args:
@@ -57,10 +57,11 @@ class DocumentProcessor:
             List of chunks with metadata
         """
         print(f"\n📄 Chunking document with {self.chunk_overlap} token overlap...")
+        print(f"   Using '---' as section separator")
 
-        # Split into paragraphs
-        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-        print(f"   Found {len(paragraphs)} paragraphs")
+        # Split by section separator (---)
+        sections = [s.strip() for s in text.split('---') if s.strip()]
+        print(f"   Found {len(sections)} sections")
 
         chunks = []
         current_chunk = ""
@@ -68,20 +69,49 @@ class DocumentProcessor:
         chunk_index = 0
         previous_overlap_text = ""  # Track text to carry over
 
-        for para in paragraphs:
-            para_tokens = self.count_tokens(para)
+        for section in sections:
+            section_tokens = self.count_tokens(section)
 
-            # If single paragraph exceeds chunk_size, split it by sentences
-            if para_tokens > self.chunk_size:
-                # Split by sentences
-                sentences = para.split('. ')
-                for sentence in sentences:
-                    sentence = sentence.strip() + '. '
-                    sentence_tokens = self.count_tokens(sentence)
+            # If single section exceeds chunk_size, split it by paragraphs as fallback
+            if section_tokens > self.chunk_size:
+                print(f"   ⚠️  Section too large ({section_tokens} tokens), splitting by paragraphs...")
 
-                    if current_tokens + sentence_tokens < self.chunk_size:
-                        current_chunk += sentence
-                        current_tokens += sentence_tokens
+                # Split large section by paragraphs
+                paragraphs = [p.strip() for p in section.split('\n\n') if p.strip()]
+
+                for para in paragraphs:
+                    para_tokens = self.count_tokens(para)
+
+                    # If even a paragraph is too large, split by sentences
+                    if para_tokens > self.chunk_size:
+                        sentences = para.split('. ')
+                        for sentence in sentences:
+                            sentence = sentence.strip() + '. '
+                            sentence_tokens = self.count_tokens(sentence)
+
+                            if current_tokens + sentence_tokens < self.chunk_size:
+                                current_chunk += sentence
+                                current_tokens += sentence_tokens
+                            else:
+                                if current_chunk:
+                                    chunks.append({
+                                        'index': chunk_index,
+                                        'content': current_chunk.strip(),
+                                        'token_count': current_tokens
+                                    })
+                                    chunk_index += 1
+
+                                    # Get overlap text from end of current chunk
+                                    previous_overlap_text = self._get_overlap_text(current_chunk)
+
+                                # Start new chunk with overlap from previous
+                                current_chunk = previous_overlap_text + sentence
+                                current_tokens = self.count_tokens(current_chunk)
+
+                    # Normal paragraph handling
+                    elif current_tokens + para_tokens < self.chunk_size:
+                        current_chunk += para + "\n\n"
+                        current_tokens += para_tokens
                     else:
                         if current_chunk:
                             chunks.append({
@@ -94,14 +124,17 @@ class DocumentProcessor:
                             # Get overlap text from end of current chunk
                             previous_overlap_text = self._get_overlap_text(current_chunk)
 
-                        # Start new chunk with overlap from previous
-                        current_chunk = previous_overlap_text + sentence
+                        # Start new chunk with overlap + new paragraph
+                        current_chunk = previous_overlap_text + para + "\n\n"
                         current_tokens = self.count_tokens(current_chunk)
 
-            # Normal case: add paragraph to current chunk
-            elif current_tokens + para_tokens < self.chunk_size:
-                current_chunk += para + "\n\n"
-                current_tokens += para_tokens
+            # Normal case: section fits within token limits
+            elif current_tokens + section_tokens < self.chunk_size:
+                # Add section separator if not first section in chunk
+                if current_chunk:
+                    current_chunk += "\n---\n\n"
+                current_chunk += section
+                current_tokens = self.count_tokens(current_chunk)
 
             # Start new chunk with overlap
             else:
@@ -116,8 +149,8 @@ class DocumentProcessor:
                     # Get overlap text from end of current chunk
                     previous_overlap_text = self._get_overlap_text(current_chunk)
 
-                # Start new chunk with overlap + new paragraph
-                current_chunk = previous_overlap_text + para + "\n\n"
+                # Start new chunk with overlap + new section
+                current_chunk = previous_overlap_text + section
                 current_tokens = self.count_tokens(current_chunk)
 
         # Add final chunk
