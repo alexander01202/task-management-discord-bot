@@ -3,10 +3,12 @@ SOP Upload - Correct Flow
 File is command parameter → dropdown "New or Replace?" → process
 """
 import discord
+import os
+import asyncio
+
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import Button, View, Select
-import os
 
 from services.document_processor import DocumentProcessor
 from services.knowledge_base import KnowledgeBaseService
@@ -114,54 +116,59 @@ class SOPCommands(commands.Cog):
 Original document:
 """
 
-        # Enable streaming for extended thinking
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=28000,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": 10000
-            },
-            messages=[
-                {"role": "user", "content": prompt + text}
-            ],
-            stream=True  # Required for extended thinking
-        )
+        def _sync_reformat(text: str) -> str:
+            # Enable streaming for extended thinking
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=28000,
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 10000
+                },
+                messages=[
+                    {"role": "user", "content": prompt + text}
+                ],
+                stream=True  # Required for extended thinking
+            )
 
-        # Handle the streaming response
-        thinking_content = []
-        text_content = []
+            # Handle the streaming response
+            thinking_content = []
+            text_content = []
 
-        with response as stream:
-            for event in stream:
-                # Handle content block start
-                if event.type == "content_block_start":
-                    if event.content_block.type == "thinking":
-                        print("\n[Thinking started...]")
-                    elif event.content_block.type == "text":
-                        print("\n[Response started...]")
+            with response as stream:
+                for event in stream:
+                    # Handle content block start
+                    if event.type == "content_block_start":
+                        if event.content_block.type == "thinking":
+                            print("\n[Thinking started...]")
+                        elif event.content_block.type == "text":
+                            print("\n[Response started...]")
 
-                # Handle content deltas (incremental content)
-                elif event.type == "content_block_delta":
-                    if event.delta.type == "thinking_delta":
-                        thinking_content.append(event.delta.thinking)
-                        print(event.delta.thinking, end="", flush=True)
-                    elif event.delta.type == "text_delta":
-                        text_content.append(event.delta.text)
-                        print(event.delta.text, end="", flush=True)
+                    # Handle content deltas (incremental content)
+                    elif event.type == "content_block_delta":
+                        if event.delta.type == "thinking_delta":
+                            thinking_content.append(event.delta.thinking)
+                            print(event.delta.thinking, end="", flush=True)
+                        elif event.delta.type == "text_delta":
+                            text_content.append(event.delta.text)
+                            print(event.delta.text, end="", flush=True)
 
-                # Handle content block stop
-                elif event.type == "content_block_stop":
-                    print()  # New line after block completes
+                    # Handle content block stop
+                    elif event.type == "content_block_stop":
+                        print()  # New line after block completes
 
-        # Join all the collected content
-        full_thinking = "".join(thinking_content)
-        full_text = "".join(text_content)
+            # Join all the collected content
+            full_thinking = "".join(thinking_content)
+            full_text = "".join(text_content)
 
-        print(f"\n\nFinal thinking summary: {full_thinking[:500]}...")  # First 500 chars
-        print(f"\nFinal response length: {len(full_text)} characters")
+            print(f"\n\nFinal thinking summary: {full_thinking[:500]}...")  # First 500 chars
+            print(f"\nFinal response length: {len(full_text)} characters")
 
-        return full_text
+            return full_text
+
+        # Run in executor - doesn't block event loop!
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync_reformat, text)
 
     @app_commands.command(name="sop_list", description="List all SOP documents")
     async def sop_list(self, interaction: discord.Interaction):

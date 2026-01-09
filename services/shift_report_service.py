@@ -242,6 +242,7 @@ class ShiftReportService:
                     if new_status == 'help':
                         report.help_needed.append(change)
 
+
         return report
 
     async def generate_shift_report(self, bot: discord.Client, channel_id: int):

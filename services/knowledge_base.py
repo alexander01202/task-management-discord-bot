@@ -52,10 +52,12 @@ class KnowledgeBaseService:
 
             self.qdrant.create_collection(
                 collection_name=self.COLLECTION_NAME,
-                vectors_config=VectorParams(
-                    size=3072,  # OpenAI text-embedding-3-large dimension
-                    distance=Distance.COSINE
-                )
+                vectors_config={
+                    "dense-vector-repr": VectorParams(
+                        size=3072,
+                        distance=Distance.COSINE
+                    )
+                }
             )
 
             # Create payload indexes for efficient filtering
@@ -107,7 +109,7 @@ class KnowledgeBaseService:
                 # Create point with metadata
                 points.append(PointStruct(
                     id=point_id,
-                    vector=chunk['embedding'],
+                    vector={"dense-vector-repr": chunk['embedding']},
                     payload={
                         'name_of_file': name_of_file,
                         'description': description,
@@ -242,7 +244,7 @@ class KnowledgeBaseService:
             self,
             query: str,
             top_k: int = 5,
-            score_threshold: float = 0.5
+            score_threshold: float = 0.2
     ) -> List[Dict]:
         """
         Search knowledge base for relevant chunks
@@ -266,6 +268,7 @@ class KnowledgeBaseService:
             # This is the standard method for vector similarity search in Qdrant 1.12+
             search_results = self.qdrant.query_points(
                 collection_name=self.COLLECTION_NAME,
+                using="dense-vector-repr",
                 query=query_embedding,
                 limit=top_k,
                 score_threshold=score_threshold,
